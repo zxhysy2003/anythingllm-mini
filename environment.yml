@@ -1,0 +1,55 @@
+name: anythingllm-mini
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+
+  # Web backend
+  - fastapi
+  - uvicorn
+  - python-multipart
+
+  # Config / validation
+  - pydantic
+  - pydantic-settings
+  - python-dotenv
+
+  # Database
+  - sqlalchemy
+  - sqlmodel
+  - alembic
+  - psycopg2-binary
+
+  # Basic utils
+  - requests
+  - httpx
+  - numpy
+  - pandas
+
+  # Document parsing
+  - pypdf
+  - python-docx
+
+  # Dev tools
+  - pytest
+  - black
+  - ruff
+  - ipykernel
+
+  - pip:
+      # LLM SDK
+      - openai
+
+      # Vector database
+      - chromadb
+      - qdrant-client
+
+      # Embedding / tokenizer
+      - sentence-transformers
+      - tiktoken
+
+      # Optional but useful for agent/tool experiments
+      - duckduckgo-search
+      - rich
+      - loguru
