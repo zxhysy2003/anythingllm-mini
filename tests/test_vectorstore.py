@@ -1,0 +1,103 @@
+import asyncio
+
+from app.core.rag import DocumentChunk
+from app.core.vectorstore import ChromaVectorStore
+
+
+def make_chunk(document_id: str, index: int, text: str) -> DocumentChunk:
+    return DocumentChunk(
+        id=f"{document_id}:{index}",
+        document_id=document_id,
+        original_filename="guide.txt",
+        stored_filename="guide.txt",
+        extension=".txt",
+        chunk_index=index,
+        text=text,
+        character_count=len(text),
+    )
+
+
+def create_store(tmp_path) -> ChromaVectorStore:
+    return ChromaVectorStore(
+        persist_dir=tmp_path / "chroma",
+        collection_name="test-documents",
+        embedding_model_name="fake-embedding-model",
+    )
+
+
+def test_chroma_store_persists_and_queries_chunks(tmp_path):
+    store = create_store(tmp_path)
+    document_id = "a" * 32
+    chunks = [
+        make_chunk(document_id, 0, "apple document"),
+        make_chunk(document_id, 1, "banana document"),
+    ]
+
+    count = asyncio.run(store.upsert_chunks(chunks, [[1.0, 0.0], [0.0, 1.0]]))
+    persisted_store = create_store(tmp_path)
+    results = asyncio.run(
+        persisted_store.query(
+            [1.0, 0.0],
+            top_k=2,
+            similarity_threshold=0.0,
+        )
+    )
+
+    assert count == 2
+    assert asyncio.run(persisted_store.count()) == 2
+    assert [result.text for result in results] == [
+        "apple document",
+        "banana document",
+    ]
+    assert results[0].score > results[1].score
+    assert results[0].document_id == document_id
+    assert results[0].chunk_index == 0
+
+
+def test_chroma_store_filters_results_below_similarity_threshold(tmp_path):
+    store = create_store(tmp_path)
+    document_id = "c" * 32
+    chunks = [
+        make_chunk(document_id, 0, "matching document"),
+        make_chunk(document_id, 1, "unrelated document"),
+    ]
+    asyncio.run(store.upsert_chunks(chunks, [[1.0, 0.0], [0.0, 1.0]]))
+
+    filtered_results = asyncio.run(
+        store.query(
+            [1.0, 0.0],
+            top_k=2,
+            similarity_threshold=0.75,
+        )
+    )
+    boundary_results = asyncio.run(
+        store.query(
+            [1.0, 0.0],
+            top_k=2,
+            similarity_threshold=0.0,
+        )
+    )
+
+    assert [result.text for result in filtered_results] == ["matching document"]
+    assert [result.text for result in boundary_results] == [
+        "matching document",
+        "unrelated document",
+    ]
+
+
+def test_chroma_store_removes_stale_chunks_when_reindexing(tmp_path):
+    store = create_store(tmp_path)
+    document_id = "b" * 32
+    old_chunks = [
+        make_chunk(document_id, 0, "old first"),
+        make_chunk(document_id, 1, "old second"),
+    ]
+    asyncio.run(store.upsert_chunks(old_chunks, [[1.0, 0.0], [0.0, 1.0]]))
+
+    new_chunks = [make_chunk(document_id, 0, "new content")]
+    asyncio.run(store.upsert_chunks(new_chunks, [[1.0, 0.0]]))
+    results = asyncio.run(store.query([1.0, 0.0], top_k=5))
+
+    assert asyncio.run(store.count()) == 1
+    assert [result.id for result in results] == [f"{document_id}:0"]
+    assert results[0].text == "new content"

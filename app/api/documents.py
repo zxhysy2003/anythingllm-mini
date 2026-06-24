@@ -4,6 +4,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from pydantic import BaseModel
 
 from app.services.document_service import document_service
+from app.services.rag_service import RAGIndexError, rag_service
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -16,6 +17,7 @@ class DocumentUploadResult(BaseModel):
     character_count: int
     upload_path: str
     parsed_path: str
+    chunk_count: int
 
 
 @router.post(
@@ -38,6 +40,14 @@ async def upload_document(
             detail=str(exc),
         ) from exc
 
+    try:
+        indexed_document = await rag_service.index_document(parsed_file)
+    except RAGIndexError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
+
     return DocumentUploadResult(
         id=saved_file.id,
         original_filename=saved_file.original_filename,
@@ -46,4 +56,5 @@ async def upload_document(
         character_count=parsed_file.character_count,
         upload_path=saved_file.upload_path,
         parsed_path=parsed_file.parsed_path,
+        chunk_count=indexed_document.chunk_count,
     )
