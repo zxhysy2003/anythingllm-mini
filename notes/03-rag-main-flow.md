@@ -77,6 +77,22 @@ Content-Type: application/json
 响应中的 `sources` 包含文档 ID、原文件名、Chunk 序号、文本和相似度，方便检查
 答案依据。
 
+## Real Embedding Smoke Test
+
+日常测试会跳过真实模型验证，不下载模型或访问网络。需要验证多语言 E5 与 Chroma
+集成时，显式运行：
+
+```bash
+RUN_REAL_EMBEDDING_TESTS=1 \
+conda run -n anythingllm-mini pytest -q \
+-m real_embedding tests/test_real_embedding_smoke.py
+```
+
+测试读取当前 `EMBEDDING_MODEL_NAME`。默认配置首次运行会下载
+`intfloat/multilingual-e5-small`；如果配置为本地模型路径，则直接加载该目录。测试使用
+真实模型生成中文文档和查询向量，验证归一化、向量维度、临时 Chroma 写入及相关
+Chunk 排名，不调用 DeepSeek，也不会写入项目的 `storage/chroma`。
+
 ## V2 Boundary
 
 当前所有文档共享一个 Chroma collection，并使用全局 `SIMILARITY_THRESHOLD`。V2
