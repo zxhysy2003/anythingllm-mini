@@ -1,3 +1,4 @@
+from contextlib import suppress
 from typing import Any
 
 from fastapi import UploadFile
@@ -205,7 +206,22 @@ class WorkspaceService:
             parsed_path=parsed_file.parsed_path,
             chunk_count=indexed.chunk_count,
         )
-        self._commit_and_refresh(session, document)
+        session.add(document)
+        try:
+            session.commit()
+        except SQLAlchemyError as exc:
+            session.rollback()
+            with suppress(Exception):
+                await self.rag.delete_document(saved_file.id, workspace_id=workspace_id)
+            raise WorkspacePersistenceError("failed to save workspace data") from exc
+
+        try:
+            session.refresh(document)
+        except SQLAlchemyError as exc:
+            session.rollback()
+            raise WorkspacePersistenceError(
+                "failed to refresh workspace document"
+            ) from exc
         return document
 
     async def chat_in_conversation(

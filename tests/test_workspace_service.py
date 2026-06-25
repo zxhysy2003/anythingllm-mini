@@ -35,6 +35,7 @@ class FakeRAGService:
         self.chunks = chunks or []
         self.retrieve_calls = []
         self.index_calls = []
+        self.delete_calls = []
 
     async def retrieve(
         self,
@@ -54,6 +55,10 @@ class FakeRAGService:
             document_id=parsed_file.id,
             chunk_count=2,
         )
+
+    async def delete_document(self, document_id, workspace_id):
+        self.delete_calls.append((document_id, workspace_id))
+        return 2
 
     def to_source(self, chunk):
         return RAGSource(
@@ -334,3 +339,69 @@ def test_workspace_document_is_indexed_and_registered(session):
     assert rag.index_calls[0][1] == workspace.id
     assert service.list_documents(session, workspace.id)[0].id == "d" * 32
     assert Path(document.upload_path).name == "guide.txt"
+
+
+def test_workspace_document_upload_cleans_index_when_database_save_fails(
+    session,
+    monkeypatch,
+):
+    rag = FakeRAGService()
+    service = WorkspaceService(
+        documents=FakeDocumentService(),
+        rag=rag,
+        chat=FakeChatService(),
+    )
+    workspace = service.create_workspace(session, name="Compensation")
+    upload = UploadFile(
+        filename="guide.txt",
+        file=BytesIO(b"hello"),
+        headers={"content-type": "text/plain"},
+    )
+    original_commit = session.commit
+
+    def broken_commit():
+        from sqlalchemy.exc import SQLAlchemyError
+
+        raise SQLAlchemyError("write failed")
+
+    monkeypatch.setattr(session, "commit", broken_commit)
+    with pytest.raises(WorkspacePersistenceError):
+        asyncio.run(service.upload_document(session, workspace.id, upload))
+
+    monkeypatch.setattr(session, "commit", original_commit)
+    assert rag.index_calls[0][1] == workspace.id
+    assert rag.delete_calls == [("d" * 32, workspace.id)]
+    assert service.list_documents(session, workspace.id) == []
+
+
+def test_workspace_document_upload_keeps_index_when_refresh_fails(
+    session,
+    monkeypatch,
+):
+    rag = FakeRAGService()
+    service = WorkspaceService(
+        documents=FakeDocumentService(),
+        rag=rag,
+        chat=FakeChatService(),
+    )
+    workspace = service.create_workspace(session, name="Refresh failure")
+    upload = UploadFile(
+        filename="guide.txt",
+        file=BytesIO(b"hello"),
+        headers={"content-type": "text/plain"},
+    )
+    original_refresh = session.refresh
+
+    def broken_refresh(record):
+        from sqlalchemy.exc import SQLAlchemyError
+
+        raise SQLAlchemyError("refresh failed")
+
+    monkeypatch.setattr(session, "refresh", broken_refresh)
+    with pytest.raises(WorkspacePersistenceError, match="refresh workspace document"):
+        asyncio.run(service.upload_document(session, workspace.id, upload))
+
+    monkeypatch.setattr(session, "refresh", original_refresh)
+    assert rag.index_calls[0][1] == workspace.id
+    assert rag.delete_calls == []
+    assert service.list_documents(session, workspace.id)[0].id == "d" * 32

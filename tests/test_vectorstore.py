@@ -1,6 +1,6 @@
 import asyncio
 
-from app.core.rag import DocumentChunk
+from app.core.rag import GLOBAL_WORKSPACE_ID, DocumentChunk
 from app.core.vectorstore import ChromaVectorStore
 
 
@@ -8,7 +8,7 @@ def make_chunk(
     document_id: str,
     index: int,
     text: str,
-    workspace_id: str | None = None,
+    workspace_id: str = GLOBAL_WORKSPACE_ID,
 ) -> DocumentChunk:
     return DocumentChunk(
         id=f"{document_id}:{index}",
@@ -132,3 +132,65 @@ def test_chroma_store_filters_chunks_by_workspace(tmp_path):
     assert asyncio.run(store.count(workspace_id=first_workspace)) == 1
     assert [result.text for result in results] == ["first workspace"]
     assert results[0].workspace_id == first_workspace
+
+
+def test_chroma_store_default_query_only_reads_global_chunks(tmp_path):
+    store = create_store(tmp_path)
+    workspace_id = "1" * 32
+    global_chunk = make_chunk("g" * 32, 0, "global document")
+    workspace_chunk = make_chunk("w" * 32, 0, "workspace document", workspace_id)
+    asyncio.run(store.upsert_chunks([global_chunk], [[1.0, 0.0]]))
+    asyncio.run(store.upsert_chunks([workspace_chunk], [[1.0, 0.0]]))
+
+    default_results = asyncio.run(
+        store.query(
+            [1.0, 0.0],
+            top_k=5,
+            similarity_threshold=0.0,
+        )
+    )
+    workspace_results = asyncio.run(
+        store.query(
+            [1.0, 0.0],
+            top_k=5,
+            similarity_threshold=0.0,
+            workspace_id=workspace_id,
+        )
+    )
+
+    assert asyncio.run(store.count()) == 1
+    assert [result.text for result in default_results] == ["global document"]
+    assert default_results[0].workspace_id == GLOBAL_WORKSPACE_ID
+    assert [result.text for result in workspace_results] == ["workspace document"]
+
+
+def test_chroma_store_deletes_document_chunks_by_workspace(tmp_path):
+    store = create_store(tmp_path)
+    workspace_id = "1" * 32
+    other_workspace_id = "2" * 32
+    first_document_id = "a" * 32
+    second_document_id = "b" * 32
+    chunks = [
+        make_chunk(first_document_id, 0, "remove me", workspace_id),
+        make_chunk(first_document_id, 1, "remove me too", workspace_id),
+        make_chunk(second_document_id, 0, "keep me", other_workspace_id),
+    ]
+    asyncio.run(store.upsert_chunks(chunks[:2], [[1.0, 0.0], [0.9, 0.1]]))
+    asyncio.run(store.upsert_chunks([chunks[2]], [[1.0, 0.0]]))
+
+    deleted_count = asyncio.run(
+        store.delete_document(first_document_id, workspace_id=workspace_id)
+    )
+
+    assert deleted_count == 2
+    assert asyncio.run(store.count(workspace_id=workspace_id)) == 0
+    assert asyncio.run(store.count(workspace_id=other_workspace_id)) == 1
+    remaining = asyncio.run(
+        store.query(
+            [1.0, 0.0],
+            top_k=5,
+            similarity_threshold=0.0,
+            workspace_id=other_workspace_id,
+        )
+    )
+    assert [result.text for result in remaining] == ["keep me"]

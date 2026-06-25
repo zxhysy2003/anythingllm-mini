@@ -26,6 +26,10 @@ POST /documents/upload
 Chroma 同时保存 Chunk 文本、向量和文档 metadata。重新索引同一文档时，会更新现有
 Chunk 并删除已经失效的旧 Chunk。
 
+V2 的全局接口会把 Chunk 写入固定范围 `workspace_id="__global__"`。这样进入 V3 后，
+旧 `/documents/upload` 和 `/rag/query` 仍可用于学习对照，但不会读取 Workspace 上传
+的文档。
+
 ## Query Flow
 
 ```text
@@ -96,5 +100,8 @@ Chunk 排名，不调用 DeepSeek，也不会写入项目的 `storage/chroma`。
 ## V2 Boundary
 
 当前所有文档共享一个 Chroma collection，并使用全局 `SIMILARITY_THRESHOLD`。V2
-暂不实现 workspace 独立阈值、数据库文档记录、rerank、混合检索、后台索引和流式
+文档只属于 `__global__` 范围，不属于任何 Workspace。旧的无 `workspace_id` Chroma
+数据不会被新的全局检索命中，学习环境可以清空 `storage/chroma` 后重新上传。
+
+V2 暂不实现 workspace 独立阈值、数据库文档记录、rerank、混合检索、后台索引和流式
 回答，这些能力在后续阶段按需加入。

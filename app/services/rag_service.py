@@ -2,7 +2,7 @@ from pydantic import BaseModel
 
 from app.core.config import settings
 from app.core.embeddings import SentenceTransformerEmbeddings, embedding_service
-from app.core.rag import RetrievedChunk, TextChunker
+from app.core.rag import GLOBAL_WORKSPACE_ID, RetrievedChunk, TextChunker
 from app.core.vectorstore import ChromaVectorStore, vector_store
 from app.services.chat_service import ChatService, chat_service
 from app.services.document_service import ParsedDocumentFile
@@ -55,7 +55,8 @@ class RAGService:
         parsed_file: ParsedDocumentFile,
         workspace_id: str | None = None,
     ) -> IndexedDocument:
-        chunks = self.chunker.chunk_document(parsed_file, workspace_id=workspace_id)
+        scope = workspace_id or GLOBAL_WORKSPACE_ID
+        chunks = self.chunker.chunk_document(parsed_file, workspace_id=scope)
 
         try:
             embeddings = await self.embeddings.embed_documents(
@@ -71,6 +72,19 @@ class RAGService:
             document_id=parsed_file.id,
             chunk_count=chunk_count,
         )
+
+    async def delete_document(
+        self,
+        document_id: str,
+        workspace_id: str | None = None,
+    ) -> int:
+        scope = workspace_id or GLOBAL_WORKSPACE_ID
+        try:
+            return await self.store.delete_document(document_id, workspace_id=scope)
+        except Exception as exc:
+            raise RAGIndexError(
+                f"failed to delete indexed document: {document_id}"
+            ) from exc
 
     async def query(self, question: str) -> RAGQueryResult:
         normalized_question = question.strip()
@@ -104,12 +118,8 @@ class RAGService:
             raise ValueError("question cannot be empty")
 
         try:
-            if workspace_id is None:
-                has_documents = await self.store.has_documents()
-            else:
-                has_documents = await self.store.has_documents(
-                    workspace_id=workspace_id
-                )
+            scope = workspace_id or GLOBAL_WORKSPACE_ID
+            has_documents = await self.store.has_documents(workspace_id=scope)
             if not has_documents:
                 return []
 
@@ -121,9 +131,8 @@ class RAGService:
                     if similarity_threshold is None
                     else similarity_threshold
                 ),
+                "workspace_id": scope,
             }
-            if workspace_id is not None:
-                query_options["workspace_id"] = workspace_id
             return await self.store.query(query_embedding, **query_options)
         except Exception as exc:
             raise RAGQueryError("failed to retrieve document context") from exc

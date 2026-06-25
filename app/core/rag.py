@@ -10,11 +10,13 @@ from app.core.config import settings
 if TYPE_CHECKING:
     from app.services.document_service import ParsedDocumentFile
 
+GLOBAL_WORKSPACE_ID = "__global__"
+
 
 class DocumentChunk(BaseModel):
     id: str
     document_id: str
-    workspace_id: str | None = None
+    workspace_id: str = GLOBAL_WORKSPACE_ID
     original_filename: str
     stored_filename: str
     extension: str
@@ -45,11 +47,12 @@ class TextChunker:
         workspace_id: str | None = None,
     ) -> list[DocumentChunk]:
         text_chunks = self.split_text(document.text)
+        scope = workspace_id or GLOBAL_WORKSPACE_ID
         return [
             DocumentChunk(
                 id=f"{document.id}:{index}",
                 document_id=document.id,
-                workspace_id=workspace_id,
+                workspace_id=scope,
                 original_filename=document.original_filename,
                 stored_filename=document.stored_filename,
                 extension=document.extension,

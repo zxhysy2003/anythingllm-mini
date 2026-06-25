@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from app.core.config import PROJECT_ROOT, settings
-from app.core.rag import DocumentChunk, RetrievedChunk
+from app.core.rag import GLOBAL_WORKSPACE_ID, DocumentChunk, RetrievedChunk
 
 if TYPE_CHECKING:
     from chromadb.api import ClientAPI
@@ -71,19 +71,37 @@ class ChromaVectorStore:
         if not 0 <= threshold <= 1:
             raise ValueError("similarity_threshold must be between 0 and 1")
 
+        scope = self._normalize_workspace_id(workspace_id)
         return await asyncio.to_thread(
             self._query,
             vector,
             result_count,
             threshold,
-            workspace_id,
+            scope,
         )
 
     async def has_documents(self, workspace_id: str | None = None) -> bool:
         return await self.count(workspace_id=workspace_id) > 0
 
     async def count(self, workspace_id: str | None = None) -> int:
-        return await asyncio.to_thread(self._count, workspace_id)
+        scope = self._normalize_workspace_id(workspace_id)
+        return await asyncio.to_thread(self._count, scope)
+
+    async def delete_document(
+        self,
+        document_id: str,
+        workspace_id: str | None = None,
+    ) -> int:
+        normalized_document_id = document_id.strip()
+        if not normalized_document_id:
+            raise ValueError("document_id cannot be empty")
+
+        scope = self._normalize_workspace_id(workspace_id)
+        return await asyncio.to_thread(
+            self._delete_document,
+            normalized_document_id,
+            scope,
+        )
 
     def _upsert_chunks(
         self,
@@ -92,8 +110,9 @@ class ChromaVectorStore:
     ) -> int:
         collection = self._get_collection()
         document_id = chunks[0].document_id
+        workspace_id = self._normalize_workspace_id(chunks[0].workspace_id)
         existing = collection.get(
-            where={"document_id": document_id},
+            where=self._document_where(document_id, workspace_id),
             include=[],
         )
         existing_ids = set(existing.get("ids") or [])
@@ -119,19 +138,18 @@ class ChromaVectorStore:
         query_embedding: list[float],
         top_k: int,
         similarity_threshold: float,
-        workspace_id: str | None,
+        workspace_id: str,
     ) -> list[RetrievedChunk]:
         collection = self._get_collection()
         collection_count = self._collection_count(collection, workspace_id)
         if collection_count == 0:
             return []
 
-        where = {"workspace_id": workspace_id} if workspace_id is not None else None
         response = collection.query(
             query_embeddings=[query_embedding],
             n_results=min(top_k, collection_count),
             include=["documents", "metadatas", "distances"],
-            where=where,
+            where={"workspace_id": workspace_id},
         )
         ids = (response.get("ids") or [[]])[0]
         documents = (response.get("documents") or [[]])[0]
@@ -155,11 +173,7 @@ class ChromaVectorStore:
                 RetrievedChunk(
                     id=chunk_id,
                     document_id=str(metadata["document_id"]),
-                    workspace_id=(
-                        str(metadata["workspace_id"])
-                        if "workspace_id" in metadata
-                        else None
-                    ),
+                    workspace_id=str(metadata["workspace_id"]),
                     original_filename=str(metadata["original_filename"]),
                     stored_filename=str(metadata["stored_filename"]),
                     extension=str(metadata["extension"]),
@@ -171,19 +185,28 @@ class ChromaVectorStore:
             )
         return results
 
-    def _count(self, workspace_id: str | None) -> int:
+    def _count(self, workspace_id: str) -> int:
         collection = self._get_collection()
         return self._collection_count(collection, workspace_id)
 
-    def _collection_count(self, collection: Any, workspace_id: str | None) -> int:
-        if workspace_id is None:
-            return collection.count()
-
+    def _collection_count(self, collection: Any, workspace_id: str) -> int:
         response = collection.get(
             where={"workspace_id": workspace_id},
             include=[],
         )
         return len(response.get("ids") or [])
+
+    def _delete_document(self, document_id: str, workspace_id: str) -> int:
+        collection = self._get_collection()
+        existing = collection.get(
+            where=self._document_where(document_id, workspace_id),
+            include=[],
+        )
+        ids = existing.get("ids") or []
+        if not ids:
+            return 0
+        collection.delete(ids=ids)
+        return len(ids)
 
     def _get_collection(self) -> Any:
         collection = self._get_client().get_or_create_collection(
@@ -241,18 +264,33 @@ class ChromaVectorStore:
         if len(document_ids) != 1:
             raise ValueError("all chunks must belong to the same document")
 
+        workspace_ids = {
+            self._normalize_workspace_id(chunk.workspace_id) for chunk in chunks
+        }
+        if len(workspace_ids) != 1:
+            raise ValueError("all chunks must belong to the same workspace")
+
     def _chunk_metadata(self, chunk: DocumentChunk) -> dict[str, str | int]:
-        metadata: dict[str, str | int] = {
+        return {
             "document_id": chunk.document_id,
+            "workspace_id": self._normalize_workspace_id(chunk.workspace_id),
             "original_filename": chunk.original_filename,
             "stored_filename": chunk.stored_filename,
             "extension": chunk.extension,
             "chunk_index": chunk.chunk_index,
             "character_count": chunk.character_count,
         }
-        if chunk.workspace_id is not None:
-            metadata["workspace_id"] = chunk.workspace_id
-        return metadata
+
+    def _normalize_workspace_id(self, workspace_id: str | None) -> str:
+        return workspace_id or GLOBAL_WORKSPACE_ID
+
+    def _document_where(self, document_id: str, workspace_id: str) -> dict[str, Any]:
+        return {
+            "$and": [
+                {"document_id": document_id},
+                {"workspace_id": workspace_id},
+            ]
+        }
 
 
 vector_store = ChromaVectorStore()
