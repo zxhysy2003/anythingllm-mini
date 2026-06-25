@@ -4,10 +4,16 @@ from app.core.rag import DocumentChunk
 from app.core.vectorstore import ChromaVectorStore
 
 
-def make_chunk(document_id: str, index: int, text: str) -> DocumentChunk:
+def make_chunk(
+    document_id: str,
+    index: int,
+    text: str,
+    workspace_id: str | None = None,
+) -> DocumentChunk:
     return DocumentChunk(
         id=f"{document_id}:{index}",
         document_id=document_id,
+        workspace_id=workspace_id,
         original_filename="guide.txt",
         stored_filename="guide.txt",
         extension=".txt",
@@ -101,3 +107,28 @@ def test_chroma_store_removes_stale_chunks_when_reindexing(tmp_path):
     assert asyncio.run(store.count()) == 1
     assert [result.id for result in results] == [f"{document_id}:0"]
     assert results[0].text == "new content"
+
+
+def test_chroma_store_filters_chunks_by_workspace(tmp_path):
+    store = create_store(tmp_path)
+    first_workspace = "1" * 32
+    second_workspace = "2" * 32
+    chunks = [
+        make_chunk("a" * 32, 0, "first workspace", first_workspace),
+        make_chunk("b" * 32, 0, "second workspace", second_workspace),
+    ]
+    asyncio.run(store.upsert_chunks([chunks[0]], [[1.0, 0.0]]))
+    asyncio.run(store.upsert_chunks([chunks[1]], [[1.0, 0.0]]))
+
+    results = asyncio.run(
+        store.query(
+            [1.0, 0.0],
+            top_k=5,
+            similarity_threshold=0.0,
+            workspace_id=first_workspace,
+        )
+    )
+
+    assert asyncio.run(store.count(workspace_id=first_workspace)) == 1
+    assert [result.text for result in results] == ["first workspace"]
+    assert results[0].workspace_id == first_workspace

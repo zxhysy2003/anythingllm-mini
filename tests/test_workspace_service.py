@@ -1,0 +1,336 @@
+import asyncio
+from io import BytesIO
+from pathlib import Path
+
+import pytest
+from fastapi import UploadFile
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine
+
+from app.core.rag import RetrievedChunk
+from app.services.chat_service import ChatResult, ChatServiceError
+from app.services.document_service import ParsedDocumentFile, SavedDocumentFile
+from app.services.rag_service import IndexedDocument, NO_CONTEXT_ANSWER, RAGSource
+from app.services.workspace_service import (
+    ConversationNotFoundError,
+    WorkspacePersistenceError,
+    WorkspaceService,
+)
+
+
+@pytest.fixture
+def session():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as db_session:
+        yield db_session
+
+
+class FakeRAGService:
+    def __init__(self, chunks=None):
+        self.chunks = chunks or []
+        self.retrieve_calls = []
+        self.index_calls = []
+
+    async def retrieve(
+        self,
+        question,
+        workspace_id,
+        top_k,
+        similarity_threshold,
+    ):
+        self.retrieve_calls.append(
+            (question, workspace_id, top_k, similarity_threshold)
+        )
+        return self.chunks
+
+    async def index_document(self, parsed_file, workspace_id):
+        self.index_calls.append((parsed_file, workspace_id))
+        return IndexedDocument(
+            document_id=parsed_file.id,
+            chunk_count=2,
+        )
+
+    def to_source(self, chunk):
+        return RAGSource(
+            document_id=chunk.document_id,
+            original_filename=chunk.original_filename,
+            chunk_index=chunk.chunk_index,
+            text=chunk.text,
+            score=chunk.score,
+        )
+
+    def build_system_prompt(self, chunks, base_prompt):
+        return f"{base_prompt}\n\nContext: {chunks[0].text}"
+
+
+class FakeChatService:
+    def __init__(self):
+        self.calls = []
+
+    async def chat(
+        self,
+        message,
+        system_prompt,
+        history,
+        temperature,
+    ):
+        self.calls.append(
+            {
+                "message": message,
+                "system_prompt": system_prompt,
+                "history": history,
+                "temperature": temperature,
+            }
+        )
+        return ChatResult(
+            message=message,
+            answer=f"answer-{len(self.calls)}",
+            provider="deepseek",
+            model="deepseek-v4-flash",
+        )
+
+
+class FakeDocumentService:
+    async def save_upload_file(self, file):
+        return SavedDocumentFile(
+            id="d" * 32,
+            original_filename=file.filename,
+            stored_filename="guide.txt",
+            content_type=file.content_type,
+            size_bytes=5,
+            upload_path="/tmp/uploads/guide.txt",
+            extension=".txt",
+        )
+
+    async def parse_saved_file(self, saved_file):
+        return ParsedDocumentFile(
+            id=saved_file.id,
+            original_filename=saved_file.original_filename,
+            stored_filename=saved_file.stored_filename,
+            extension=saved_file.extension,
+            text="hello",
+            character_count=5,
+            parsed_path="/tmp/parsed/guide.txt",
+        )
+
+
+def make_chunk(workspace_id: str) -> RetrievedChunk:
+    return RetrievedChunk(
+        id=f"{'a' * 32}:0",
+        document_id="a" * 32,
+        workspace_id=workspace_id,
+        original_filename="guide.txt",
+        stored_filename="guide.txt",
+        extension=".txt",
+        chunk_index=0,
+        text="Workspace-scoped context.",
+        character_count=25,
+        score=0.93,
+    )
+
+
+def test_workspace_chat_loads_limited_history_and_auto_titles(session):
+    rag = FakeRAGService()
+    chat = FakeChatService()
+    service = WorkspaceService(rag=rag, chat=chat)
+    workspace = service.create_workspace(
+        session,
+        name="Study",
+        history_limit=1,
+        top_k=3,
+        similarity_threshold=0.8,
+    )
+    conversation = service.create_conversation(session, workspace.id)
+
+    asyncio.run(
+        service.chat_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "first question",
+        )
+    )
+    asyncio.run(
+        service.chat_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "second question",
+        )
+    )
+    asyncio.run(
+        service.chat_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "third question",
+        )
+    )
+
+    assert chat.calls[0]["history"] == []
+    assert chat.calls[1]["history"] == [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "answer-1"},
+    ]
+    assert chat.calls[2]["history"] == [
+        {"role": "user", "content": "second question"},
+        {"role": "assistant", "content": "answer-2"},
+    ]
+    assert rag.retrieve_calls[-1] == (
+        "third question",
+        workspace.id,
+        3,
+        0.8,
+    )
+
+    conversations = service.list_conversations(session, workspace.id)
+    messages = service.list_messages(session, workspace.id, conversation.id)
+    assert conversations[0].title == "first question"
+    assert [message.role for message in messages] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
+
+
+def test_query_mode_without_context_skips_llm_and_saves_refusal(session):
+    chat = FakeChatService()
+    service = WorkspaceService(rag=FakeRAGService(), chat=chat)
+    workspace = service.create_workspace(
+        session,
+        name="Strict knowledge base",
+        chat_mode="query",
+    )
+    conversation = service.create_conversation(session, workspace.id)
+
+    result = asyncio.run(
+        service.chat_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "unknown question",
+        )
+    )
+
+    assert result.answer == NO_CONTEXT_ANSWER
+    assert result.provider is None
+    assert result.sources == []
+    assert chat.calls == []
+    messages = service.list_messages(session, workspace.id, conversation.id)
+    assert [message.content for message in messages] == [
+        "unknown question",
+        NO_CONTEXT_ANSWER,
+    ]
+
+
+def test_rag_sources_and_model_metadata_are_persisted(session):
+    service = WorkspaceService(rag=FakeRAGService(), chat=FakeChatService())
+    workspace = service.create_workspace(session, name="RAG workspace")
+    service.rag.chunks = [make_chunk(workspace.id)]
+    conversation = service.create_conversation(session, workspace.id)
+
+    result = asyncio.run(
+        service.chat_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "question",
+        )
+    )
+
+    messages = service.list_messages(session, workspace.id, conversation.id)
+    assistant_message = messages[1]
+    assert result.sources[0].document_id == "a" * 32
+    assert assistant_message.sources[0]["score"] == 0.93
+    assert assistant_message.provider == "deepseek"
+    assert assistant_message.model == "deepseek-v4-flash"
+    assert "Workspace-scoped context." in service.chat.calls[0]["system_prompt"]
+
+
+def test_llm_failure_does_not_save_partial_exchange(session):
+    class BrokenChatService(FakeChatService):
+        async def chat(self, message, system_prompt, history, temperature):
+            raise ChatServiceError("DeepSeek chat failed: timeout")
+
+    service = WorkspaceService(rag=FakeRAGService(), chat=BrokenChatService())
+    workspace = service.create_workspace(session, name="Failure test")
+    conversation = service.create_conversation(session, workspace.id)
+
+    with pytest.raises(ChatServiceError):
+        asyncio.run(
+            service.chat_in_conversation(
+                session,
+                workspace.id,
+                conversation.id,
+                "question",
+            )
+        )
+
+    assert service.list_messages(session, workspace.id, conversation.id) == []
+
+
+def test_database_failure_rolls_back_both_messages(session, monkeypatch):
+    service = WorkspaceService(rag=FakeRAGService(), chat=FakeChatService())
+    workspace = service.create_workspace(session, name="Rollback test")
+    conversation = service.create_conversation(session, workspace.id)
+    original_commit = session.commit
+
+    def broken_commit():
+        from sqlalchemy.exc import SQLAlchemyError
+
+        raise SQLAlchemyError("write failed")
+
+    monkeypatch.setattr(session, "commit", broken_commit)
+    with pytest.raises(WorkspacePersistenceError):
+        asyncio.run(
+            service.chat_in_conversation(
+                session,
+                workspace.id,
+                conversation.id,
+                "question",
+            )
+        )
+
+    monkeypatch.setattr(session, "commit", original_commit)
+    assert service.list_messages(session, workspace.id, conversation.id) == []
+
+
+def test_conversation_must_belong_to_workspace(session):
+    service = WorkspaceService(rag=FakeRAGService(), chat=FakeChatService())
+    first = service.create_workspace(session, name="First")
+    second = service.create_workspace(session, name="Second")
+    conversation = service.create_conversation(session, first.id)
+
+    with pytest.raises(ConversationNotFoundError):
+        service.list_messages(session, second.id, conversation.id)
+
+
+def test_workspace_document_is_indexed_and_registered(session):
+    rag = FakeRAGService()
+    service = WorkspaceService(
+        documents=FakeDocumentService(),
+        rag=rag,
+        chat=FakeChatService(),
+    )
+    workspace = service.create_workspace(session, name="Documents")
+    upload = UploadFile(
+        filename="guide.txt",
+        file=BytesIO(b"hello"),
+        headers={"content-type": "text/plain"},
+    )
+
+    document = asyncio.run(service.upload_document(session, workspace.id, upload))
+
+    assert document.workspace_id == workspace.id
+    assert document.chunk_count == 2
+    assert rag.index_calls[0][1] == workspace.id
+    assert service.list_documents(session, workspace.id)[0].id == "d" * 32
+    assert Path(document.upload_path).name == "guide.txt"
