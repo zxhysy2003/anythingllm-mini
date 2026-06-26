@@ -29,6 +29,20 @@ UploadFile
 如果 Chroma 索引成功但 `WorkspaceDocument` 数据库记录保存失败，服务会删除刚写入的
 该文档 Chunk，避免聊天能检索到但文档列表看不到的孤儿向量。
 
+Workspace 文档删除：
+
+```text
+workspace_id + document_id
+-> 校验文档属于当前 Workspace
+-> 校验本地上传文件和解析文件路径安全
+-> 删除该 document_id + workspace_id 范围内的 Chroma Chunk
+-> 删除本地上传文件和解析文件
+-> 删除 WorkspaceDocument 数据库记录
+```
+
+本地文件删除前会校验路径位于对应的 `upload_dir/{document_id}` 和
+`parsed_dir/{document_id}` 下，避免根据异常元数据误删其他文件。
+
 Workspace 聊天：
 
 ```text
@@ -61,6 +75,7 @@ PATCH /workspaces/{workspace_id}
 
 POST /workspaces/{workspace_id}/documents/upload
 GET  /workspaces/{workspace_id}/documents
+DELETE /workspaces/{workspace_id}/documents/{document_id}
 
 POST /workspaces/{workspace_id}/conversations
 GET  /workspaces/{workspace_id}/conversations
@@ -74,6 +89,7 @@ V2 旧接口只访问 `workspace_id="__global__"` 的全局 Chunk，不会读取
 ## 当前边界
 
 V3 仍使用同步请求和单机 SQLite，不包含用户权限、流式回答、历史摘要、问题改写、
-Workspace 删除和后台索引。旧 V2 Chunk 没有 `workspace_id`，不会被 Workspace 范围的
-查询命中；旧的无 `workspace_id` Chroma 数据也不会被新的 V2 全局检索命中，学习环境
-可以清空 `storage/chroma` 后重新上传。
+Workspace 删除、软删除和后台索引。文档删除采用硬删除；如果数据库删除提交失败，
+不会尝试恢复已经删除的 Chroma Chunk 或本地文件。旧 V2 Chunk 没有 `workspace_id`，
+不会被 Workspace 范围的查询命中；旧的无 `workspace_id` Chroma 数据也不会被新的 V2
+全局检索命中，学习环境可以清空 `storage/chroma` 后重新上传。

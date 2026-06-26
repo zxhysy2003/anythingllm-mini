@@ -16,7 +16,10 @@ from app.models.conversation import (
 from app.models.document import WorkspaceDocument
 from app.models.workspace import Workspace, utc_now
 from app.services.chat_service import ChatService, chat_service
-from app.services.document_service import DocumentService, document_service
+from app.services.document_service import (
+    DocumentService,
+    document_service,
+)
 from app.services.rag_service import (
     NO_CONTEXT_ANSWER,
     RAGService,
@@ -35,6 +38,10 @@ class ConversationNotFoundError(LookupError):
     """Raised when a conversation does not belong to the workspace."""
 
 
+class WorkspaceDocumentNotFoundError(LookupError):
+    """Raised when a document does not belong to the workspace."""
+
+
 class WorkspacePersistenceError(RuntimeError):
     """Raised when V3 metadata or messages cannot be persisted."""
 
@@ -46,6 +53,17 @@ class WorkspaceChatResult(BaseModel):
     sources: list[RAGSource]
     provider: str | None
     model: str | None
+
+
+class WorkspaceDocumentDeleteResult(BaseModel):
+    id: str
+    workspace_id: str
+    original_filename: str
+    deleted_chunks: int
+    upload_path: str
+    parsed_path: str
+    upload_file_deleted: bool
+    parsed_file_deleted: bool
 
 
 class WorkspaceService:
@@ -179,6 +197,61 @@ class WorkspaceService:
         )
         return list(session.exec(statement).all())
 
+    async def delete_document(
+        self,
+        session: Session,
+        workspace_id: str,
+        document_id: str,
+    ) -> WorkspaceDocumentDeleteResult:
+        self.get_workspace(session, workspace_id)
+        document = self._get_workspace_document(session, workspace_id, document_id)
+
+        try:
+            await self.documents.validate_document_file_paths(
+                document.id,
+                document.upload_path,
+                document.parsed_path,
+            )
+        except Exception as exc:
+            raise WorkspacePersistenceError(
+                "failed to delete workspace document files"
+            ) from exc
+
+        deleted_chunks = await self.rag.delete_document(
+            document_id,
+            workspace_id=workspace_id,
+        )
+        try:
+            deleted_files = await self.documents.delete_document_files(
+                document.id,
+                document.upload_path,
+                document.parsed_path,
+            )
+        except Exception as exc:
+            raise WorkspacePersistenceError(
+                "failed to delete workspace document files"
+            ) from exc
+
+        result = WorkspaceDocumentDeleteResult(
+            id=document.id,
+            workspace_id=document.workspace_id,
+            original_filename=document.original_filename,
+            deleted_chunks=deleted_chunks,
+            upload_path=deleted_files.upload_path,
+            parsed_path=deleted_files.parsed_path,
+            upload_file_deleted=deleted_files.upload_file_deleted,
+            parsed_file_deleted=deleted_files.parsed_file_deleted,
+        )
+        session.delete(document)
+        try:
+            session.commit()
+        except SQLAlchemyError as exc:
+            session.rollback()
+            raise WorkspacePersistenceError(
+                "failed to delete workspace document"
+            ) from exc
+        return result
+
     async def upload_document(
         self,
         session: Session,
@@ -222,6 +295,23 @@ class WorkspaceService:
             raise WorkspacePersistenceError(
                 "failed to refresh workspace document"
             ) from exc
+        return document
+
+    def _get_workspace_document(
+        self,
+        session: Session,
+        workspace_id: str,
+        document_id: str,
+    ) -> WorkspaceDocument:
+        statement = select(WorkspaceDocument).where(
+            WorkspaceDocument.id == document_id,
+            WorkspaceDocument.workspace_id == workspace_id,
+        )
+        document = session.exec(statement).first()
+        if document is None:
+            raise WorkspaceDocumentNotFoundError(
+                f"document not found in workspace: {document_id}"
+            )
         return document
 
     async def chat_in_conversation(

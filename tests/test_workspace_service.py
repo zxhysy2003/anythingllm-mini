@@ -8,11 +8,23 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.core.rag import RetrievedChunk
+from app.models.document import WorkspaceDocument
 from app.services.chat_service import ChatResult, ChatServiceError
-from app.services.document_service import ParsedDocumentFile, SavedDocumentFile
-from app.services.rag_service import IndexedDocument, NO_CONTEXT_ANSWER, RAGSource
+from app.services.document_service import (
+    DeletedDocumentFiles,
+    DocumentService,
+    ParsedDocumentFile,
+    SavedDocumentFile,
+)
+from app.services.rag_service import (
+    IndexedDocument,
+    NO_CONTEXT_ANSWER,
+    RAGIndexError,
+    RAGSource,
+)
 from app.services.workspace_service import (
     ConversationNotFoundError,
+    WorkspaceDocumentNotFoundError,
     WorkspacePersistenceError,
     WorkspaceService,
 )
@@ -36,6 +48,7 @@ class FakeRAGService:
         self.retrieve_calls = []
         self.index_calls = []
         self.delete_calls = []
+        self.delete_error = None
 
     async def retrieve(
         self,
@@ -57,6 +70,8 @@ class FakeRAGService:
         )
 
     async def delete_document(self, document_id, workspace_id):
+        if self.delete_error is not None:
+            raise self.delete_error
         self.delete_calls.append((document_id, workspace_id))
         return 2
 
@@ -122,6 +137,17 @@ class FakeDocumentService:
             character_count=5,
             parsed_path="/tmp/parsed/guide.txt",
         )
+
+    async def delete_document_files(self, document_id, upload_path, parsed_path):
+        return DeletedDocumentFiles(
+            upload_path=upload_path,
+            parsed_path=parsed_path,
+            upload_file_deleted=True,
+            parsed_file_deleted=True,
+        )
+
+    async def validate_document_file_paths(self, document_id, upload_path, parsed_path):
+        return None
 
 
 def make_chunk(workspace_id: str) -> RetrievedChunk:
@@ -339,6 +365,219 @@ def test_workspace_document_is_indexed_and_registered(session):
     assert rag.index_calls[0][1] == workspace.id
     assert service.list_documents(session, workspace.id)[0].id == "d" * 32
     assert Path(document.upload_path).name == "guide.txt"
+
+
+def test_workspace_document_delete_removes_index_files_and_record(session, tmp_path):
+    rag = FakeRAGService()
+    service = WorkspaceService(
+        documents=DocumentService(
+            upload_dir=tmp_path / "uploads",
+            parsed_dir=tmp_path / "parsed",
+        ),
+        rag=rag,
+        chat=FakeChatService(),
+    )
+    workspace = service.create_workspace(session, name="Delete documents")
+    upload = UploadFile(
+        filename="guide.txt",
+        file=BytesIO(b"hello workspace"),
+        headers={"content-type": "text/plain"},
+    )
+    document = asyncio.run(service.upload_document(session, workspace.id, upload))
+    upload_path = Path(document.upload_path)
+    parsed_path = Path(document.parsed_path)
+
+    result = asyncio.run(service.delete_document(session, workspace.id, document.id))
+
+    assert result.id == document.id
+    assert result.workspace_id == workspace.id
+    assert result.original_filename == "guide.txt"
+    assert result.deleted_chunks == 2
+    assert result.upload_file_deleted is True
+    assert result.parsed_file_deleted is True
+    assert rag.delete_calls == [(document.id, workspace.id)]
+    assert service.list_documents(session, workspace.id) == []
+    assert not upload_path.exists()
+    assert not parsed_path.exists()
+    assert not upload_path.parent.exists()
+    assert not parsed_path.parent.exists()
+
+
+def test_workspace_document_delete_allows_missing_local_files(session, tmp_path):
+    rag = FakeRAGService()
+    service = WorkspaceService(
+        documents=DocumentService(
+            upload_dir=tmp_path / "uploads",
+            parsed_dir=tmp_path / "parsed",
+        ),
+        rag=rag,
+        chat=FakeChatService(),
+    )
+    workspace = service.create_workspace(session, name="Missing files")
+    upload = UploadFile(
+        filename="guide.txt",
+        file=BytesIO(b"hello workspace"),
+        headers={"content-type": "text/plain"},
+    )
+    document = asyncio.run(service.upload_document(session, workspace.id, upload))
+    Path(document.upload_path).unlink()
+    Path(document.parsed_path).unlink()
+
+    result = asyncio.run(service.delete_document(session, workspace.id, document.id))
+
+    assert result.upload_file_deleted is False
+    assert result.parsed_file_deleted is False
+    assert rag.delete_calls == [(document.id, workspace.id)]
+    assert service.list_documents(session, workspace.id) == []
+
+
+def test_workspace_document_delete_requires_document_to_belong_to_workspace(
+    session,
+    tmp_path,
+):
+    rag = FakeRAGService()
+    service = WorkspaceService(
+        documents=DocumentService(
+            upload_dir=tmp_path / "uploads",
+            parsed_dir=tmp_path / "parsed",
+        ),
+        rag=rag,
+        chat=FakeChatService(),
+    )
+    first_workspace = service.create_workspace(session, name="First")
+    second_workspace = service.create_workspace(session, name="Second")
+    upload = UploadFile(
+        filename="guide.txt",
+        file=BytesIO(b"hello workspace"),
+        headers={"content-type": "text/plain"},
+    )
+    document = asyncio.run(service.upload_document(session, first_workspace.id, upload))
+
+    with pytest.raises(WorkspaceDocumentNotFoundError):
+        asyncio.run(service.delete_document(session, second_workspace.id, document.id))
+
+    assert rag.delete_calls == []
+    assert service.list_documents(session, first_workspace.id)[0].id == document.id
+
+
+def test_workspace_document_delete_keeps_state_when_index_delete_fails(
+    session,
+    tmp_path,
+):
+    rag = FakeRAGService()
+    rag.delete_error = RAGIndexError("failed to delete indexed document")
+    service = WorkspaceService(
+        documents=DocumentService(
+            upload_dir=tmp_path / "uploads",
+            parsed_dir=tmp_path / "parsed",
+        ),
+        rag=rag,
+        chat=FakeChatService(),
+    )
+    workspace = service.create_workspace(session, name="RAG failure")
+    upload = UploadFile(
+        filename="guide.txt",
+        file=BytesIO(b"hello workspace"),
+        headers={"content-type": "text/plain"},
+    )
+    document = asyncio.run(service.upload_document(session, workspace.id, upload))
+    upload_path = Path(document.upload_path)
+    parsed_path = Path(document.parsed_path)
+
+    with pytest.raises(RAGIndexError):
+        asyncio.run(service.delete_document(session, workspace.id, document.id))
+
+    assert service.list_documents(session, workspace.id)[0].id == document.id
+    assert upload_path.read_bytes() == b"hello workspace"
+    assert parsed_path.read_text(encoding="utf-8") == "hello workspace"
+
+
+def test_workspace_document_delete_rejects_unsafe_file_paths(session, tmp_path):
+    rag = FakeRAGService()
+    service = WorkspaceService(
+        documents=DocumentService(
+            upload_dir=tmp_path / "uploads",
+            parsed_dir=tmp_path / "parsed",
+        ),
+        rag=rag,
+        chat=FakeChatService(),
+    )
+    workspace = service.create_workspace(session, name="Unsafe path")
+    document_id = "e" * 32
+    unsafe_upload_path = tmp_path / "outside.txt"
+    unsafe_upload_path.write_text("do not delete", encoding="utf-8")
+    parsed_dir = tmp_path / "parsed" / document_id
+    parsed_dir.mkdir(parents=True)
+    parsed_path = parsed_dir / "guide.txt"
+    parsed_path.write_text("parsed", encoding="utf-8")
+    document = WorkspaceDocument(
+        id=document_id,
+        workspace_id=workspace.id,
+        original_filename="guide.txt",
+        stored_filename="guide.txt",
+        content_type="text/plain",
+        extension=".txt",
+        size_bytes=13,
+        character_count=6,
+        upload_path=str(unsafe_upload_path),
+        parsed_path=str(parsed_path),
+        chunk_count=1,
+    )
+    session.add(document)
+    session.commit()
+
+    with pytest.raises(WorkspacePersistenceError):
+        asyncio.run(service.delete_document(session, workspace.id, document_id))
+
+    assert rag.delete_calls == []
+    assert unsafe_upload_path.read_text(encoding="utf-8") == "do not delete"
+    assert parsed_path.read_text(encoding="utf-8") == "parsed"
+    assert service.list_documents(session, workspace.id)[0].id == document_id
+
+
+def test_workspace_document_delete_rejects_directory_paths_before_index_delete(
+    session,
+    tmp_path,
+):
+    rag = FakeRAGService()
+    service = WorkspaceService(
+        documents=DocumentService(
+            upload_dir=tmp_path / "uploads",
+            parsed_dir=tmp_path / "parsed",
+        ),
+        rag=rag,
+        chat=FakeChatService(),
+    )
+    workspace = service.create_workspace(session, name="Directory path")
+    document_id = "f" * 32
+    upload_path = tmp_path / "uploads" / document_id / "not-a-file"
+    parsed_path = tmp_path / "parsed" / document_id / "guide.txt"
+    upload_path.mkdir(parents=True)
+    parsed_path.parent.mkdir(parents=True)
+    parsed_path.write_text("parsed", encoding="utf-8")
+    document = WorkspaceDocument(
+        id=document_id,
+        workspace_id=workspace.id,
+        original_filename="guide.txt",
+        stored_filename="guide.txt",
+        content_type="text/plain",
+        extension=".txt",
+        size_bytes=13,
+        character_count=6,
+        upload_path=str(upload_path),
+        parsed_path=str(parsed_path),
+        chunk_count=1,
+    )
+    session.add(document)
+    session.commit()
+
+    with pytest.raises(WorkspacePersistenceError):
+        asyncio.run(service.delete_document(session, workspace.id, document_id))
+
+    assert rag.delete_calls == []
+    assert upload_path.is_dir()
+    assert parsed_path.read_text(encoding="utf-8") == "parsed"
+    assert service.list_documents(session, workspace.id)[0].id == document_id
 
 
 def test_workspace_document_upload_cleans_index_when_database_save_fails(

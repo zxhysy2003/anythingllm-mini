@@ -36,6 +36,13 @@ class ParsedDocumentFile(BaseModel):
     parsed_path: str
 
 
+class DeletedDocumentFiles(BaseModel):
+    upload_path: str
+    parsed_path: str
+    upload_file_deleted: bool
+    parsed_file_deleted: bool
+
+
 class DocumentService:
     def __init__(
         self,
@@ -125,6 +132,38 @@ class DocumentService:
             text=text,
             character_count=len(text),
             parsed_path=str(parsed_path),
+        )
+
+    async def delete_document_files(
+        self,
+        document_id: str,
+        upload_path: str,
+        parsed_path: str,
+    ) -> DeletedDocumentFiles:
+        upload_file_deleted, parsed_file_deleted = await asyncio.to_thread(
+            self._delete_document_files,
+            document_id,
+            upload_path,
+            parsed_path,
+        )
+        return DeletedDocumentFiles(
+            upload_path=upload_path,
+            parsed_path=parsed_path,
+            upload_file_deleted=upload_file_deleted,
+            parsed_file_deleted=parsed_file_deleted,
+        )
+
+    async def validate_document_file_paths(
+        self,
+        document_id: str,
+        upload_path: str,
+        parsed_path: str,
+    ) -> None:
+        await asyncio.to_thread(
+            self._validated_delete_paths,
+            document_id,
+            upload_path,
+            parsed_path,
         )
 
     def _resolve_storage_dir(self, storage_dir: str | Path) -> Path:
@@ -225,6 +264,76 @@ class DocumentService:
             except OSError:
                 pass
             raise
+
+    def _delete_document_files(
+        self,
+        document_id: str,
+        upload_path: str,
+        parsed_path: str,
+    ) -> tuple[bool, bool]:
+        upload_file, parsed_file = self._validated_delete_paths(
+            document_id,
+            upload_path,
+            parsed_path,
+        )
+
+        upload_file_deleted = self._unlink_if_exists(upload_file)
+        parsed_file_deleted = self._unlink_if_exists(parsed_file)
+        self._remove_empty_dir(self.upload_dir / document_id)
+        self._remove_empty_dir(self.parsed_dir / document_id)
+        return upload_file_deleted, parsed_file_deleted
+
+    def _validated_delete_paths(
+        self,
+        document_id: str,
+        upload_path: str,
+        parsed_path: str,
+    ) -> tuple[Path, Path]:
+        if not re.fullmatch(r"[0-9a-f]{32}", document_id):
+            raise ValueError("invalid document id")
+
+        upload_file = self._validate_delete_path(
+            document_id,
+            upload_path,
+            self.upload_dir,
+            "upload",
+        )
+        parsed_file = self._validate_delete_path(
+            document_id,
+            parsed_path,
+            self.parsed_dir,
+            "parsed",
+        )
+        return upload_file, parsed_file
+
+    def _validate_delete_path(
+        self,
+        document_id: str,
+        file_path: str,
+        storage_dir: Path,
+        path_label: str,
+    ) -> Path:
+        path = Path(file_path).resolve()
+        document_dir = (storage_dir / document_id).resolve()
+        if path == document_dir or not path.is_relative_to(document_dir):
+            raise ValueError(f"invalid {path_label} path")
+        if path.exists() and not path.is_file():
+            raise ValueError(f"{path_label} path is not a file")
+        return path
+
+    def _unlink_if_exists(self, path: Path) -> bool:
+        if not path.exists():
+            return False
+        if not path.is_file():
+            raise ValueError("document path is not a file")
+        path.unlink()
+        return True
+
+    def _remove_empty_dir(self, path: Path) -> None:
+        try:
+            path.rmdir()
+        except OSError:
+            pass
 
     def _safe_filename(self, filename: str) -> str:
         # Keep only the basename so path separators cannot escape the upload dir.

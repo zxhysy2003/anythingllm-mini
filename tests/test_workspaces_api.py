@@ -17,6 +17,7 @@ from app.services.workspace_service import WorkspaceService
 class FakeRAGService:
     def __init__(self):
         self.indexed_workspace_id = None
+        self.deleted_documents = []
 
     async def retrieve(
         self,
@@ -30,6 +31,10 @@ class FakeRAGService:
     async def index_document(self, parsed_file, workspace_id):
         self.indexed_workspace_id = workspace_id
         return IndexedDocument(document_id=parsed_file.id, chunk_count=1)
+
+    async def delete_document(self, document_id, workspace_id):
+        self.deleted_documents.append((document_id, workspace_id))
+        return 1
 
     def to_source(self, chunk):
         return RAGSource(
@@ -174,6 +179,60 @@ def test_workspace_document_upload_is_scoped_and_registered(workspace_api):
     assert [item["id"] for item in documents] == [document["id"]]
 
 
+def test_workspace_document_delete_removes_record_files_and_index(workspace_api):
+    client, rag = workspace_api
+    workspace = create_workspace(client)
+    upload_response = client.post(
+        f"/workspaces/{workspace['id']}/documents/upload",
+        files={"file": ("guide.txt", b"hello workspace", "text/plain")},
+    )
+    document = upload_response.json()
+    upload_path = Path(document["upload_path"])
+    parsed_path = Path(document["parsed_path"])
+
+    delete_response = client.delete(
+        f"/workspaces/{workspace['id']}/documents/{document['id']}"
+    )
+
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {
+        "id": document["id"],
+        "workspace_id": workspace["id"],
+        "original_filename": "guide.txt",
+        "deleted_chunks": 1,
+        "upload_path": document["upload_path"],
+        "parsed_path": document["parsed_path"],
+        "upload_file_deleted": True,
+        "parsed_file_deleted": True,
+    }
+    assert rag.deleted_documents == [(document["id"], workspace["id"])]
+    assert not upload_path.exists()
+    assert not parsed_path.exists()
+    assert client.get(f"/workspaces/{workspace['id']}/documents").json() == []
+
+
+def test_workspace_document_delete_returns_not_found_for_missing_scope(workspace_api):
+    client, rag = workspace_api
+    first_workspace = create_workspace(client, name="First")
+    second_workspace = create_workspace(client, name="Second")
+    upload_response = client.post(
+        f"/workspaces/{first_workspace['id']}/documents/upload",
+        files={"file": ("guide.txt", b"hello workspace", "text/plain")},
+    )
+    document = upload_response.json()
+
+    cross_workspace_response = client.delete(
+        f"/workspaces/{second_workspace['id']}/documents/{document['id']}"
+    )
+    missing_workspace_response = client.delete(
+        f"/workspaces/{'f' * 32}/documents/{document['id']}"
+    )
+
+    assert cross_workspace_response.status_code == 404
+    assert missing_workspace_response.status_code == 404
+    assert rag.deleted_documents == []
+
+
 def test_workspace_routes_return_validation_and_not_found_errors(workspace_api):
     client, _ = workspace_api
 
@@ -193,6 +252,7 @@ def test_workspace_openapi_routes_are_registered():
 
     assert "/workspaces" in schema["paths"]
     assert "/workspaces/{workspace_id}/documents/upload" in schema["paths"]
+    assert "/workspaces/{workspace_id}/documents/{document_id}" in schema["paths"]
     assert (
         "/workspaces/{workspace_id}/conversations/{conversation_id}/chat"
         in schema["paths"]

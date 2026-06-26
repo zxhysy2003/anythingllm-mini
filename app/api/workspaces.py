@@ -12,6 +12,8 @@ from app.services.chat_service import ChatServiceError
 from app.services.rag_service import RAGIndexError, RAGQueryError, RAGSource
 from app.services.workspace_service import (
     ConversationNotFoundError,
+    WorkspaceDocumentDeleteResult,
+    WorkspaceDocumentNotFoundError,
     WorkspaceChatResult,
     WorkspaceNotFoundError,
     WorkspacePersistenceError,
@@ -119,6 +121,17 @@ class WorkspaceDocumentRead(BaseModel):
     created_at: datetime
 
 
+class WorkspaceDocumentDeleteResponse(BaseModel):
+    id: str
+    workspace_id: str
+    original_filename: str
+    deleted_chunks: int
+    upload_path: str
+    parsed_path: str
+    upload_file_deleted: bool
+    parsed_file_deleted: bool
+
+
 class WorkspaceChatRequest(BaseModel):
     message: str = Field(min_length=1)
 
@@ -212,6 +225,30 @@ def list_workspace_documents(
         raise _workspace_http_error(exc) from exc
 
 
+@router.delete(
+    "/{workspace_id}/documents/{document_id}",
+    response_model=WorkspaceDocumentDeleteResponse,
+)
+async def delete_workspace_document(
+    workspace_id: str,
+    document_id: str,
+    session: SessionDependency,
+) -> WorkspaceDocumentDeleteResult:
+    try:
+        return await workspace_service.delete_document(
+            session,
+            workspace_id,
+            document_id,
+        )
+    except (
+        WorkspaceNotFoundError,
+        WorkspaceDocumentNotFoundError,
+        WorkspacePersistenceError,
+        RAGIndexError,
+    ) as exc:
+        raise _workspace_http_error(exc) from exc
+
+
 @router.post(
     "/{workspace_id}/conversations",
     response_model=ConversationRead,
@@ -289,7 +326,14 @@ async def chat_in_conversation(
 
 
 def _workspace_http_error(exc: Exception) -> HTTPException:
-    if isinstance(exc, (WorkspaceNotFoundError, ConversationNotFoundError)):
+    if isinstance(
+        exc,
+        (
+            WorkspaceNotFoundError,
+            ConversationNotFoundError,
+            WorkspaceDocumentNotFoundError,
+        ),
+    ):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     if isinstance(exc, ChatServiceError):
         return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
