@@ -25,10 +25,9 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite:///./anythingllm_mini.db"
 
-    vector_store: Literal["chroma", "qdrant"] = "chroma"
+    vector_store: Literal["chroma"] = "chroma"
     chroma_persist_dir: str = "./storage/chroma"
     chroma_collection_name: str = "anythingllm-mini-documents"
-    qdrant_path: str = "./storage/qdrant"
 
     upload_dir: str = "./storage/uploads"
     parsed_dir: str = "./storage/parsed"

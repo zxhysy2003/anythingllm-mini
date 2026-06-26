@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from contextlib import suppress
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -117,20 +118,25 @@ class ChromaVectorStore:
         )
         existing_ids = set(existing.get("ids") or [])
 
-        for start in range(0, len(chunks), UPSERT_BATCH_SIZE):
-            batch_chunks = chunks[start : start + UPSERT_BATCH_SIZE]
-            batch_embeddings = embeddings[start : start + UPSERT_BATCH_SIZE]
-            collection.upsert(
-                ids=[chunk.id for chunk in batch_chunks],
-                embeddings=batch_embeddings,
-                documents=[chunk.text for chunk in batch_chunks],
-                metadatas=[self._chunk_metadata(chunk) for chunk in batch_chunks],
-            )
+        try:
+            for start in range(0, len(chunks), UPSERT_BATCH_SIZE):
+                batch_chunks = chunks[start : start + UPSERT_BATCH_SIZE]
+                batch_embeddings = embeddings[start : start + UPSERT_BATCH_SIZE]
+                collection.upsert(
+                    ids=[chunk.id for chunk in batch_chunks],
+                    embeddings=batch_embeddings,
+                    documents=[chunk.text for chunk in batch_chunks],
+                    metadatas=[self._chunk_metadata(chunk) for chunk in batch_chunks],
+                )
 
-        new_ids = {chunk.id for chunk in chunks}
-        stale_ids = existing_ids - new_ids
-        if stale_ids:
-            collection.delete(ids=sorted(stale_ids))
+            new_ids = {chunk.id for chunk in chunks}
+            stale_ids = existing_ids - new_ids
+            if stale_ids:
+                collection.delete(ids=sorted(stale_ids))
+        except Exception:
+            with suppress(Exception):
+                self._delete_document(document_id, workspace_id)
+            raise
         return len(chunks)
 
     def _query(

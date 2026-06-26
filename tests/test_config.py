@@ -18,3 +18,14 @@ def test_settings_rejects_similarity_threshold_outside_range(threshold):
         match="similarity_threshold must be between 0 and 1",
     ):
         Settings(similarity_threshold=threshold)
+
+
+def test_settings_accepts_chroma_vector_store():
+    configured_settings = Settings(vector_store="chroma")
+
+    assert configured_settings.vector_store == "chroma"
+
+
+def test_settings_rejects_unimplemented_qdrant_vector_store():
+    with pytest.raises(ValidationError):
+        Settings(vector_store="qdrant")

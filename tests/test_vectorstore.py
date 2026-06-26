@@ -1,6 +1,9 @@
 import asyncio
 
+import pytest
+
 from app.core.rag import GLOBAL_WORKSPACE_ID, DocumentChunk
+from app.core import vectorstore as vectorstore_module
 from app.core.vectorstore import ChromaVectorStore
 
 
@@ -28,6 +31,72 @@ def create_store(tmp_path) -> ChromaVectorStore:
         persist_dir=tmp_path / "chroma",
         collection_name="test-documents",
         embedding_model_name="fake-embedding-model",
+    )
+
+
+class FakeChromaClient:
+    def __init__(self, collection):
+        self.collection = collection
+
+    def get_or_create_collection(self, name, metadata):
+        self.collection.metadata = metadata
+        return self.collection
+
+
+class FakeChromaCollection:
+    def __init__(self):
+        self.metadata = {}
+        self.records = {}
+        self.upsert_calls = 0
+        self.fail_on_upsert_call = None
+        self.fail_next_delete = False
+
+    def get(self, where, include):
+        ids = [
+            record_id
+            for record_id, record in self.records.items()
+            if self._matches_where(record["metadata"], where)
+        ]
+        return {"ids": sorted(ids)}
+
+    def upsert(self, ids, embeddings, documents, metadatas):
+        self.upsert_calls += 1
+        if self.upsert_calls == self.fail_on_upsert_call:
+            raise RuntimeError("upsert failed")
+
+        for record_id, embedding, document, metadata in zip(
+            ids,
+            embeddings,
+            documents,
+            metadatas,
+            strict=True,
+        ):
+            self.records[record_id] = {
+                "embedding": embedding,
+                "document": document,
+                "metadata": metadata,
+            }
+
+    def delete(self, ids):
+        if self.fail_next_delete:
+            self.fail_next_delete = False
+            raise RuntimeError("delete failed")
+
+        for record_id in ids:
+            self.records.pop(record_id, None)
+
+    def _matches_where(self, metadata, where):
+        if "$and" in where:
+            return all(self._matches_where(metadata, item) for item in where["$and"])
+        return all(metadata.get(key) == value for key, value in where.items())
+
+
+def create_fake_store(tmp_path, collection) -> ChromaVectorStore:
+    return ChromaVectorStore(
+        persist_dir=tmp_path / "fake-chroma",
+        collection_name="fake-documents",
+        embedding_model_name="fake-embedding-model",
+        client_factory=lambda _: FakeChromaClient(collection),
     )
 
 
@@ -194,3 +263,44 @@ def test_chroma_store_deletes_document_chunks_by_workspace(tmp_path):
         )
     )
     assert [result.text for result in remaining] == ["keep me"]
+
+
+def test_chroma_store_cleans_partial_batches_when_upsert_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(vectorstore_module, "UPSERT_BATCH_SIZE", 1)
+    collection = FakeChromaCollection()
+    collection.fail_on_upsert_call = 2
+    store = create_fake_store(tmp_path, collection)
+    workspace_id = "1" * 32
+    document_id = "a" * 32
+    chunks = [
+        make_chunk(document_id, 0, "first", workspace_id),
+        make_chunk(document_id, 1, "second", workspace_id),
+    ]
+
+    with pytest.raises(RuntimeError, match="upsert failed"):
+        asyncio.run(store.upsert_chunks(chunks, [[1.0, 0.0], [0.9, 0.1]]))
+
+    assert asyncio.run(store.count(workspace_id=workspace_id)) == 0
+    assert collection.records == {}
+
+
+def test_chroma_store_clears_document_when_reindex_stale_delete_fails(
+    tmp_path,
+):
+    collection = FakeChromaCollection()
+    store = create_fake_store(tmp_path, collection)
+    workspace_id = "1" * 32
+    document_id = "a" * 32
+    old_chunks = [
+        make_chunk(document_id, 0, "old first", workspace_id),
+        make_chunk(document_id, 1, "old second", workspace_id),
+    ]
+    new_chunks = [make_chunk(document_id, 0, "new first", workspace_id)]
+    asyncio.run(store.upsert_chunks(old_chunks, [[1.0, 0.0], [0.0, 1.0]]))
+    collection.fail_next_delete = True
+
+    with pytest.raises(RuntimeError, match="delete failed"):
+        asyncio.run(store.upsert_chunks(new_chunks, [[0.8, 0.2]]))
+
+    assert asyncio.run(store.count(workspace_id=workspace_id)) == 0
+    assert collection.records == {}
