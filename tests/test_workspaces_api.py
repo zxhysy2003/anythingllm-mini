@@ -2,93 +2,37 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
 
 from app.api import workspaces as workspaces_api
 from app.db.session import get_session
 from app.main import app
-from app.services.chat_service import ChatResult
 from app.services.document_service import DocumentService
-from app.services.rag_service import IndexedDocument, RAGSource
+from app.services.workspace_document_service import WorkspaceDocumentService
 from app.services.workspace_service import WorkspaceService
-
-
-class FakeRAGService:
-    def __init__(self):
-        self.indexed_workspace_id = None
-        self.deleted_documents = []
-
-    async def retrieve(
-        self,
-        question,
-        workspace_id,
-        top_k,
-        similarity_threshold,
-    ):
-        return []
-
-    async def index_document(self, parsed_file, workspace_id):
-        self.indexed_workspace_id = workspace_id
-        return IndexedDocument(document_id=parsed_file.id, chunk_count=1)
-
-    async def delete_document(self, document_id, workspace_id):
-        self.deleted_documents.append((document_id, workspace_id))
-        return 1
-
-    def to_source(self, chunk):
-        return RAGSource(
-            document_id=chunk.document_id,
-            original_filename=chunk.original_filename,
-            chunk_index=chunk.chunk_index,
-            text=chunk.text,
-            score=chunk.score,
-        )
-
-    def build_system_prompt(self, chunks, base_prompt):
-        return base_prompt
-
-
-class FakeChatService:
-    async def chat(
-        self,
-        message,
-        system_prompt,
-        history,
-        temperature,
-    ):
-        return ChatResult(
-            message=message,
-            answer=f"echo: {message}",
-            provider="deepseek",
-            model="deepseek-v4-flash",
-        )
+from tests.fakes import FakeChatService, FakeRAGService
 
 
 @pytest.fixture
-def workspace_api(tmp_path, monkeypatch):
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
+def workspace_api(tmp_path, monkeypatch, session_override):
+    rag = FakeRAGService(indexed_chunk_count=1, deleted_chunk_count=1)
+    workspace_service = WorkspaceService(
+        rag=rag,
+        chat=FakeChatService(echo=True),
     )
-    SQLModel.metadata.create_all(engine)
-
-    def override_session():
-        with Session(engine) as session:
-            yield session
-
-    rag = FakeRAGService()
-    service = WorkspaceService(
+    workspace_document_service = WorkspaceDocumentService(
         documents=DocumentService(
             upload_dir=tmp_path / "uploads",
             parsed_dir=tmp_path / "parsed",
         ),
         rag=rag,
-        chat=FakeChatService(),
     )
-    app.dependency_overrides[get_session] = override_session
-    monkeypatch.setattr(workspaces_api, "workspace_service", service)
+    app.dependency_overrides[get_session] = session_override
+    monkeypatch.setattr(workspaces_api, "workspace_service", workspace_service)
+    monkeypatch.setattr(
+        workspaces_api,
+        "workspace_document_service",
+        workspace_document_service,
+    )
     client = TestClient(app)
     yield client, rag
     app.dependency_overrides.clear()

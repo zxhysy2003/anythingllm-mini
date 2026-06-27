@@ -1,8 +1,9 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.services.chat_service import ChatServiceError
-from app.services.rag_service import RAGQueryError, RAGQueryResult, rag_service
+from app.api.errors import to_http_exception
+from app.services.exceptions import ChatServiceError, RAGQueryError
+from app.services.rag_service import RAGQueryResult, rag_service
 
 router = APIRouter(prefix="/rag", tags=["rag"])
 
@@ -34,17 +35,8 @@ async def query_documents(request: RAGQueryRequest) -> RAGQueryResult:
     try:
         return await rag_service.query(request.question)
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
+        raise to_http_exception(exc) from exc
     except ChatServiceError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
+        raise to_http_exception(exc) from exc
     except RAGQueryError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
-        ) from exc
+        raise to_http_exception(exc) from exc

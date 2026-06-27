@@ -4,10 +4,7 @@ from pydantic import BaseModel
 
 from app.core.config import settings
 from app.core.llm import DEFAULT_SYSTEM_PROMPT, ChatMessage, get_llm
-
-
-class ChatServiceError(RuntimeError):
-    """Raised when the LLM call fails inside the chat service."""
+from app.services.exceptions import ChatServiceError
 
 
 class ChatResult(BaseModel):

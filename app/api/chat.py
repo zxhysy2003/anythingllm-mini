@@ -1,9 +1,10 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.api.errors import to_http_exception
 from app.core.llm import DEFAULT_SYSTEM_PROMPT
-from app.services.chat_service import ChatResult, ChatServiceError, chat_service
-
+from app.services.chat_service import ChatResult, chat_service
+from app.services.exceptions import ChatServiceError
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -55,12 +56,6 @@ async def create_chat(request: ChatRequest) -> ChatResult:
             temperature=request.temperature,
         )
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
+        raise to_http_exception(exc) from exc
     except ChatServiceError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
+        raise to_http_exception(exc) from exc

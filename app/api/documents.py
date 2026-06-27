@@ -1,10 +1,12 @@
 from typing import Annotated
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, UploadFile, status
 from pydantic import BaseModel
 
+from app.api.errors import to_http_exception
 from app.services.document_service import document_service
-from app.services.rag_service import RAGIndexError, rag_service
+from app.services.exceptions import RAGIndexError
+from app.services.rag_service import rag_service
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -35,18 +37,12 @@ async def upload_document(
         saved_file = await document_service.save_upload_file(file)
         parsed_file = await document_service.parse_saved_file(saved_file)
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
+        raise to_http_exception(exc) from exc
 
     try:
         indexed_document = await rag_service.index_document(parsed_file)
     except RAGIndexError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
-        ) from exc
+        raise to_http_exception(exc) from exc
 
     return DocumentUploadResult(
         id=saved_file.id,

@@ -6,16 +6,9 @@ from app.core.rag import GLOBAL_WORKSPACE_ID, RetrievedChunk, TextChunker
 from app.core.vectorstore import ChromaVectorStore, vector_store
 from app.services.chat_service import ChatService, chat_service
 from app.services.document_service import ParsedDocumentFile
+from app.services.exceptions import RAGIndexError, RAGQueryError
 
 NO_CONTEXT_ANSWER = "No indexed document context is available to answer this question."
-
-
-class RAGIndexError(RuntimeError):
-    """Raised when parsed document text cannot be indexed."""
-
-
-class RAGQueryError(RuntimeError):
-    """Raised when document retrieval fails."""
 
 
 class IndexedDocument(BaseModel):
