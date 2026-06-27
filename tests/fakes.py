@@ -1,6 +1,9 @@
+from pathlib import Path
+
 from app.services.chat_service import ChatResult
 from app.services.document_service import (
     DeletedDocumentFiles,
+    DocumentFileDeletionPlan,
     ParsedDocumentFile,
     SavedDocumentFile,
 )
@@ -119,10 +122,24 @@ class FakeDocumentService:
             parsed_path="/tmp/parsed/guide.txt",
         )
 
-    async def delete_document_files(self, document_id, upload_path, parsed_path):
-        return DeletedDocumentFiles(
+    async def build_document_file_deletion_plan(
+        self,
+        document_id,
+        upload_path,
+        parsed_path,
+    ):
+        return DocumentFileDeletionPlan(
+            document_id=document_id,
+            upload_file=Path(upload_path),
+            parsed_file=Path(parsed_path),
             upload_path=upload_path,
             parsed_path=parsed_path,
+        )
+
+    async def delete_document_files(self, deletion_plan):
+        return DeletedDocumentFiles(
+            upload_path=deletion_plan.upload_path,
+            parsed_path=deletion_plan.parsed_path,
             upload_file_deleted=True,
             parsed_file_deleted=True,
         )

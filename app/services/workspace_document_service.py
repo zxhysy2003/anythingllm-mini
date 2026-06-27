@@ -104,7 +104,7 @@ class WorkspaceDocumentService:
         document = self._get_workspace_document(session, workspace_id, document_id)
 
         try:
-            await self.documents.validate_document_file_paths(
+            deletion_plan = await self.documents.build_document_file_deletion_plan(
                 document.id,
                 document.upload_path,
                 document.parsed_path,
@@ -119,11 +119,7 @@ class WorkspaceDocumentService:
             workspace_id=workspace_id,
         )
         try:
-            deleted_files = await self.documents.delete_document_files(
-                document.id,
-                document.upload_path,
-                document.parsed_path,
-            )
+            deleted_files = await self.documents.delete_document_files(deletion_plan)
         except Exception as exc:
             raise WorkspacePersistenceError(
                 "failed to delete workspace document files"

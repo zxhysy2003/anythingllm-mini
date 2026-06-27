@@ -1,5 +1,6 @@
 import asyncio
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
@@ -41,6 +42,15 @@ class DeletedDocumentFiles(BaseModel):
     parsed_path: str
     upload_file_deleted: bool
     parsed_file_deleted: bool
+
+
+@dataclass(frozen=True)
+class DocumentFileDeletionPlan:
+    document_id: str
+    upload_file: Path
+    parsed_file: Path
+    upload_path: str
+    parsed_path: str
 
 
 class DocumentService:
@@ -136,21 +146,30 @@ class DocumentService:
 
     async def delete_document_files(
         self,
-        document_id: str,
-        upload_path: str,
-        parsed_path: str,
+        deletion_plan: DocumentFileDeletionPlan,
     ) -> DeletedDocumentFiles:
         upload_file_deleted, parsed_file_deleted = await asyncio.to_thread(
             self._delete_document_files,
+            deletion_plan,
+        )
+        return DeletedDocumentFiles(
+            upload_path=deletion_plan.upload_path,
+            parsed_path=deletion_plan.parsed_path,
+            upload_file_deleted=upload_file_deleted,
+            parsed_file_deleted=parsed_file_deleted,
+        )
+
+    async def build_document_file_deletion_plan(
+        self,
+        document_id: str,
+        upload_path: str,
+        parsed_path: str,
+    ) -> DocumentFileDeletionPlan:
+        return await asyncio.to_thread(
+            self._build_document_file_deletion_plan,
             document_id,
             upload_path,
             parsed_path,
-        )
-        return DeletedDocumentFiles(
-            upload_path=upload_path,
-            parsed_path=parsed_path,
-            upload_file_deleted=upload_file_deleted,
-            parsed_file_deleted=parsed_file_deleted,
         )
 
     async def validate_document_file_paths(
@@ -159,8 +178,7 @@ class DocumentService:
         upload_path: str,
         parsed_path: str,
     ) -> None:
-        await asyncio.to_thread(
-            self._validated_delete_paths,
+        await self.build_document_file_deletion_plan(
             document_id,
             upload_path,
             parsed_path,
@@ -267,21 +285,32 @@ class DocumentService:
 
     def _delete_document_files(
         self,
+        deletion_plan: DocumentFileDeletionPlan,
+    ) -> tuple[bool, bool]:
+        upload_file_deleted = self._unlink_if_exists(deletion_plan.upload_file)
+        parsed_file_deleted = self._unlink_if_exists(deletion_plan.parsed_file)
+        self._remove_empty_dir(self.upload_dir / deletion_plan.document_id)
+        self._remove_empty_dir(self.parsed_dir / deletion_plan.document_id)
+        return upload_file_deleted, parsed_file_deleted
+
+    def _build_document_file_deletion_plan(
+        self,
         document_id: str,
         upload_path: str,
         parsed_path: str,
-    ) -> tuple[bool, bool]:
+    ) -> DocumentFileDeletionPlan:
         upload_file, parsed_file = self._validated_delete_paths(
             document_id,
             upload_path,
             parsed_path,
         )
-
-        upload_file_deleted = self._unlink_if_exists(upload_file)
-        parsed_file_deleted = self._unlink_if_exists(parsed_file)
-        self._remove_empty_dir(self.upload_dir / document_id)
-        self._remove_empty_dir(self.parsed_dir / document_id)
-        return upload_file_deleted, parsed_file_deleted
+        return DocumentFileDeletionPlan(
+            document_id=document_id,
+            upload_file=upload_file,
+            parsed_file=parsed_file,
+            upload_path=upload_path,
+            parsed_path=parsed_path,
+        )
 
     def _validated_delete_paths(
         self,

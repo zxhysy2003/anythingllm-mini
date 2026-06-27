@@ -26,6 +26,25 @@ def save_file(service: DocumentService, file: FakeUploadFile):
     return asyncio.run(service.save_upload_file(file))
 
 
+def build_deletion_plan(
+    service: DocumentService,
+    document_id: str,
+    upload_path: Path,
+    parsed_path: Path,
+):
+    return asyncio.run(
+        service.build_document_file_deletion_plan(
+            document_id,
+            str(upload_path),
+            str(parsed_path),
+        )
+    )
+
+
+def delete_files(service: DocumentService, deletion_plan):
+    return asyncio.run(service.delete_document_files(deletion_plan))
+
+
 def test_save_txt_file(tmp_path):
     service = DocumentService(upload_dir=tmp_path)
     file = FakeUploadFile("hello.txt", b"hello world")
@@ -84,3 +103,88 @@ def test_empty_file_is_rejected_and_cleaned_up(tmp_path):
         save_file(service, file)
 
     assert list(tmp_path.iterdir()) == []
+
+
+def test_build_document_file_deletion_plan_returns_safe_paths(tmp_path):
+    service = DocumentService(
+        upload_dir=tmp_path / "uploads",
+        parsed_dir=tmp_path / "parsed",
+    )
+    document_id = "a" * 32
+    upload_path = service.upload_dir / document_id / "guide.txt"
+    parsed_path = service.parsed_dir / document_id / "guide.txt"
+    upload_path.parent.mkdir(parents=True)
+    parsed_path.parent.mkdir(parents=True)
+    upload_path.write_text("upload", encoding="utf-8")
+    parsed_path.write_text("parsed", encoding="utf-8")
+
+    plan = build_deletion_plan(service, document_id, upload_path, parsed_path)
+
+    assert plan.document_id == document_id
+    assert plan.upload_file == upload_path.resolve()
+    assert plan.parsed_file == parsed_path.resolve()
+    assert plan.upload_path == str(upload_path)
+    assert plan.parsed_path == str(parsed_path)
+
+
+def test_build_document_file_deletion_plan_rejects_unsafe_paths(tmp_path):
+    service = DocumentService(
+        upload_dir=tmp_path / "uploads",
+        parsed_dir=tmp_path / "parsed",
+    )
+    document_id = "b" * 32
+    outside_path = tmp_path / "outside.txt"
+    parsed_path = service.parsed_dir / document_id / "guide.txt"
+    outside_path.write_text("outside", encoding="utf-8")
+    parsed_path.parent.mkdir(parents=True)
+    parsed_path.write_text("parsed", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid upload path"):
+        build_deletion_plan(service, document_id, outside_path, parsed_path)
+
+    with pytest.raises(ValueError, match="invalid document id"):
+        build_deletion_plan(service, "not-a-document-id", outside_path, parsed_path)
+
+
+def test_build_document_file_deletion_plan_rejects_directory_paths(tmp_path):
+    service = DocumentService(
+        upload_dir=tmp_path / "uploads",
+        parsed_dir=tmp_path / "parsed",
+    )
+    document_id = "c" * 32
+    upload_path = service.upload_dir / document_id / "not-a-file"
+    parsed_path = service.parsed_dir / document_id / "guide.txt"
+    upload_path.mkdir(parents=True)
+    parsed_path.parent.mkdir(parents=True)
+    parsed_path.write_text("parsed", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="upload path is not a file"):
+        build_deletion_plan(service, document_id, upload_path, parsed_path)
+
+
+def test_delete_document_files_uses_existing_deletion_plan(tmp_path, monkeypatch):
+    service = DocumentService(
+        upload_dir=tmp_path / "uploads",
+        parsed_dir=tmp_path / "parsed",
+    )
+    document_id = "d" * 32
+    upload_path = service.upload_dir / document_id / "guide.txt"
+    parsed_path = service.parsed_dir / document_id / "guide.txt"
+    upload_path.parent.mkdir(parents=True)
+    parsed_path.parent.mkdir(parents=True)
+    upload_path.write_text("upload", encoding="utf-8")
+    parsed_path.write_text("parsed", encoding="utf-8")
+    plan = build_deletion_plan(service, document_id, upload_path, parsed_path)
+
+    def fail_if_revalidated(*args):
+        raise AssertionError("delete_document_files should use the deletion plan")
+
+    monkeypatch.setattr(service, "_validated_delete_paths", fail_if_revalidated)
+    result = delete_files(service, plan)
+
+    assert result.upload_path == str(upload_path)
+    assert result.parsed_path == str(parsed_path)
+    assert result.upload_file_deleted is True
+    assert result.parsed_file_deleted is True
+    assert not upload_path.exists()
+    assert not parsed_path.exists()
