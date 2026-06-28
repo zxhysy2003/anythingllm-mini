@@ -7,6 +7,8 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel
+
 from app.core.config import PROJECT_ROOT, settings
 from app.core.rag import GLOBAL_WORKSPACE_ID, DocumentChunk, RetrievedChunk
 
@@ -14,6 +16,12 @@ if TYPE_CHECKING:
     from chromadb.api import ClientAPI
 
 UPSERT_BATCH_SIZE = 100
+
+
+class VectorDocumentKey(BaseModel):
+    workspace_id: str
+    document_id: str
+    chunk_count: int
 
 
 class ChromaVectorStore:
@@ -87,6 +95,30 @@ class ChromaVectorStore:
     async def count(self, workspace_id: str | None = None) -> int:
         scope = self._normalize_workspace_id(workspace_id)
         return await asyncio.to_thread(self._count, scope)
+
+    async def count_document_chunks(
+        self,
+        document_id: str,
+        workspace_id: str,
+    ) -> int:
+        normalized_document_id = document_id.strip()
+        if not normalized_document_id:
+            raise ValueError("document_id cannot be empty")
+        scope = self._normalize_workspace_id(workspace_id)
+        return await asyncio.to_thread(
+            self._count_document_chunks,
+            normalized_document_id,
+            scope,
+        )
+
+    async def list_document_keys(
+        self,
+        workspace_id: str | None = None,
+    ) -> list[VectorDocumentKey]:
+        scope = (
+            None if workspace_id is None else self._normalize_workspace_id(workspace_id)
+        )
+        return await asyncio.to_thread(self._list_document_keys, scope)
 
     async def delete_document(
         self,
@@ -194,6 +226,45 @@ class ChromaVectorStore:
     def _count(self, workspace_id: str) -> int:
         collection = self._get_collection()
         return self._collection_count(collection, workspace_id)
+
+    def _count_document_chunks(self, document_id: str, workspace_id: str) -> int:
+        collection = self._get_collection()
+        response = collection.get(
+            where=self._document_where(document_id, workspace_id),
+            include=[],
+        )
+        return len(response.get("ids") or [])
+
+    def _list_document_keys(
+        self,
+        workspace_id: str | None,
+    ) -> list[VectorDocumentKey]:
+        collection = self._get_collection()
+        query_options: dict[str, Any] = {"include": ["metadatas"]}
+        if workspace_id is not None:
+            query_options["where"] = {"workspace_id": workspace_id}
+        response = collection.get(**query_options)
+        metadatas = response.get("metadatas") or []
+
+        counts: dict[tuple[str, str], int] = {}
+        for metadata in metadatas:
+            if not metadata:
+                continue
+            document_id = metadata.get("document_id")
+            metadata_workspace_id = metadata.get("workspace_id")
+            if not document_id or not metadata_workspace_id:
+                continue
+            key = (str(metadata_workspace_id), str(document_id))
+            counts[key] = counts.get(key, 0) + 1
+
+        return [
+            VectorDocumentKey(
+                workspace_id=key[0],
+                document_id=key[1],
+                chunk_count=chunk_count,
+            )
+            for key, chunk_count in sorted(counts.items())
+        ]
 
     def _collection_count(self, collection: Any, workspace_id: str) -> int:
         response = collection.get(

@@ -51,13 +51,19 @@ class FakeChromaCollection:
         self.fail_on_upsert_call = None
         self.fail_next_delete = False
 
-    def get(self, where, include):
+    def get(self, where=None, include=None):
         ids = [
             record_id
             for record_id, record in self.records.items()
             if self._matches_where(record["metadata"], where)
         ]
-        return {"ids": sorted(ids)}
+        sorted_ids = sorted(ids)
+        response = {"ids": sorted_ids}
+        if include and "metadatas" in include:
+            response["metadatas"] = [
+                self.records[record_id]["metadata"] for record_id in sorted_ids
+            ]
+        return response
 
     def upsert(self, ids, embeddings, documents, metadatas):
         self.upsert_calls += 1
@@ -86,6 +92,8 @@ class FakeChromaCollection:
             self.records.pop(record_id, None)
 
     def _matches_where(self, metadata, where):
+        if where is None:
+            return True
         if "$and" in where:
             return all(self._matches_where(metadata, item) for item in where["$and"])
         return all(metadata.get(key) == value for key, value in where.items())
@@ -263,6 +271,42 @@ def test_chroma_store_deletes_document_chunks_by_workspace(tmp_path):
         )
     )
     assert [result.text for result in remaining] == ["keep me"]
+
+
+def test_chroma_store_counts_and_lists_document_keys(tmp_path):
+    store = create_store(tmp_path)
+    first_workspace = "1" * 32
+    second_workspace = "2" * 32
+    first_document_id = "a" * 32
+    second_document_id = "b" * 32
+    chunks = [
+        make_chunk(first_document_id, 0, "first", first_workspace),
+        make_chunk(first_document_id, 1, "first again", first_workspace),
+        make_chunk(second_document_id, 0, "second", second_workspace),
+    ]
+    asyncio.run(store.upsert_chunks(chunks[:2], [[1.0, 0.0], [0.9, 0.1]]))
+    asyncio.run(store.upsert_chunks([chunks[2]], [[0.0, 1.0]]))
+
+    all_keys = asyncio.run(store.list_document_keys())
+    first_workspace_keys = asyncio.run(
+        store.list_document_keys(workspace_id=first_workspace)
+    )
+    first_count = asyncio.run(
+        store.count_document_chunks(first_document_id, workspace_id=first_workspace)
+    )
+
+    all_key_values = [
+        (key.workspace_id, key.document_id, key.chunk_count) for key in all_keys
+    ]
+    assert all_key_values == [
+        (first_workspace, first_document_id, 2),
+        (second_workspace, second_document_id, 1),
+    ]
+    assert [
+        (key.workspace_id, key.document_id, key.chunk_count)
+        for key in first_workspace_keys
+    ] == [(first_workspace, first_document_id, 2)]
+    assert first_count == 2
 
 
 def test_chroma_store_cleans_partial_batches_when_upsert_fails(tmp_path, monkeypatch):
