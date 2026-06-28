@@ -2,6 +2,9 @@
 
 V2 在 V1 文档解析结果之上增加文本分块、Embedding、向量存储和检索问答。
 
+这份笔记记录的是 V2 主流程。当前代码已经叠加了 V3 的 Workspace 范围隔离和
+V3.5 的 RAG context 字符预算；这些后续变化在相关章节中单独标注。
+
 ## Index Flow
 
 ```text
@@ -38,15 +41,22 @@ POST /rag/query
   -> 为问题生成查询向量
   -> 从 Chroma 检索 top_k 个 Chunk
   -> 过滤低于 similarity_threshold 的 Chunk
-  -> 将 Chunk 组装为受约束的 system prompt
+  -> 按 max_context_chars 预算组装受约束的 system prompt
   -> 调用 ChatService 和 DeepSeek
-  -> 返回答案与 sources
+  -> 返回答案与实际进入 prompt 的 sources
 ```
 
 `/chat` 仍然是普通聊天，不进行文档检索。`/rag/query` 只根据检索上下文回答。当前
 默认相似度阈值为 `0.75`，只有 `score >= 0.75` 的 Chunk 才会进入 Prompt 和
 `sources`。没有已索引文档或所有候选都低于阈值时，直接返回无上下文提示，不调用
 DeepSeek。
+
+V3.5 后，RAG context 还会受 `MAX_CONTEXT_CHARS` 限制，默认 `4000` 个字符。预算只
+统计完整 source block 和 source 之间的空行分隔符，不统计 workspace system prompt
+或 conversation history。系统按检索分数顺序保留能完整放入预算的 source block，
+遇到第一个超预算 block 后停止；因此返回给 API 的 `sources` 只包含实际进入 prompt
+的 Chunk。如果检索到了 Chunk，但预算后没有任何 source 可用，也会按无上下文处理，
+直接返回无上下文提示，不调用 DeepSeek。
 
 ## Main Components
 
@@ -100,10 +110,12 @@ Chunk 排名，不调用 DeepSeek，也不会写入项目的 `storage/chroma`。
 
 ## V2 Boundary
 
-当前只实现 Chroma，所有文档共享一个 Chroma collection，并使用全局
-`SIMILARITY_THRESHOLD`。V2 文档只属于 `__global__` 范围，不属于任何 Workspace。旧的
-无 `workspace_id` Chroma 数据不会被新的全局检索命中，学习环境可以清空
-`storage/chroma` 后重新上传。
+V2 阶段只实现 Chroma，所有文档共享一个 Chroma collection，并使用全局
+`SIMILARITY_THRESHOLD`。当前代码进入 V3 后，Workspace 接口可以保存独立的 `top_k`
+和 `similarity_threshold`，但旧 `/documents/upload` 和 `/rag/query` 仍属于
+`__global__` 范围，不属于任何 Workspace。旧的无 `workspace_id` Chroma 数据不会被
+新的全局检索命中，学习环境可以清空 `storage/chroma` 后重新上传。
 
-V2 暂不实现 workspace 独立阈值、数据库文档记录、rerank、混合检索、后台索引和流式
-回答，这些能力在后续阶段按需加入。
+V2 阶段暂不实现 workspace 独立阈值、数据库文档记录、rerank、混合检索、后台索引和
+流式回答。其中 workspace 独立阈值和数据库文档记录已经在 V3 补上；rerank、混合
+检索、后台索引和流式回答仍留到后续阶段。
