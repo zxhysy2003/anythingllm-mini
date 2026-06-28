@@ -20,6 +20,19 @@ def test_settings_rejects_similarity_threshold_outside_range(threshold):
         Settings(similarity_threshold=threshold)
 
 
+@pytest.mark.parametrize("max_context_chars", [1, 4000])
+def test_settings_accepts_positive_max_context_chars(max_context_chars):
+    configured_settings = Settings(max_context_chars=max_context_chars)
+
+    assert configured_settings.max_context_chars == max_context_chars
+
+
+@pytest.mark.parametrize("max_context_chars", [0, -1])
+def test_settings_rejects_non_positive_max_context_chars(max_context_chars):
+    with pytest.raises(ValidationError, match="value must be greater than zero"):
+        Settings(max_context_chars=max_context_chars)
+
+
 def test_settings_accepts_chroma_vector_store():
     configured_settings = Settings(vector_store="chroma")
 

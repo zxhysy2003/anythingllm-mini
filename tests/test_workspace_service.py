@@ -13,18 +13,24 @@ from app.services.workspace_service import (
 from tests.fakes import FakeChatService, FakeRAGService
 
 
-def make_chunk(workspace_id: str) -> RetrievedChunk:
+def make_chunk(
+    workspace_id: str,
+    *,
+    text: str = "Workspace-scoped context.",
+    chunk_index: int = 0,
+    score: float = 0.93,
+) -> RetrievedChunk:
     return RetrievedChunk(
-        id=f"{'a' * 32}:0",
+        id=f"{'a' * 32}:{chunk_index}",
         document_id="a" * 32,
         workspace_id=workspace_id,
         original_filename="guide.txt",
         stored_filename="guide.txt",
         extension=".txt",
-        chunk_index=0,
-        text="Workspace-scoped context.",
-        character_count=25,
-        score=0.93,
+        chunk_index=chunk_index,
+        text=text,
+        character_count=len(text),
+        score=score,
     )
 
 
@@ -147,6 +153,103 @@ def test_rag_sources_and_model_metadata_are_persisted(session):
     assert assistant_message.provider == "deepseek"
     assert assistant_message.model == "deepseek-v4-flash"
     assert "Workspace-scoped context." in service.chat.calls[0]["system_prompt"]
+
+
+def test_workspace_chat_returns_and_persists_only_budgeted_sources(session):
+    chat = FakeChatService()
+    rag = FakeRAGService(context_chunk_limit=1)
+    service = WorkspaceService(rag=rag, chat=chat)
+    workspace = service.create_workspace(session, name="Budgeted RAG workspace")
+    first_chunk = make_chunk(
+        workspace.id,
+        text="first workspace context",
+        chunk_index=0,
+        score=0.99,
+    )
+    second_chunk = make_chunk(
+        workspace.id,
+        text="second workspace context",
+        chunk_index=1,
+        score=0.98,
+    )
+    rag.chunks = [first_chunk, second_chunk]
+    conversation = service.create_conversation(session, workspace.id)
+
+    result = asyncio.run(
+        service.chat_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "question",
+        )
+    )
+
+    messages = service.list_messages(session, workspace.id, conversation.id)
+    assistant_message = messages[1]
+    assert [source.text for source in result.sources] == ["first workspace context"]
+    assert [source["text"] for source in assistant_message.sources] == [
+        "first workspace context"
+    ]
+    assert "first workspace context" in chat.calls[0]["system_prompt"]
+    assert "second workspace context" not in chat.calls[0]["system_prompt"]
+
+
+def test_query_mode_without_budgeted_context_skips_llm_and_saves_refusal(session):
+    chat = FakeChatService()
+    rag = FakeRAGService(context_chunk_limit=0)
+    service = WorkspaceService(rag=rag, chat=chat)
+    workspace = service.create_workspace(
+        session,
+        name="Budgeted query workspace",
+        chat_mode="query",
+    )
+    rag.chunks = [make_chunk(workspace.id)]
+    conversation = service.create_conversation(session, workspace.id)
+
+    result = asyncio.run(
+        service.chat_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "question",
+        )
+    )
+
+    messages = service.list_messages(session, workspace.id, conversation.id)
+    assert result.answer == NO_CONTEXT_ANSWER
+    assert result.sources == []
+    assert result.provider is None
+    assert chat.calls == []
+    assert [message.content for message in messages] == [
+        "question",
+        NO_CONTEXT_ANSWER,
+    ]
+
+
+def test_chat_mode_without_budgeted_context_falls_back_to_workspace_prompt(session):
+    chat = FakeChatService()
+    rag = FakeRAGService(context_chunk_limit=0)
+    service = WorkspaceService(rag=rag, chat=chat)
+    workspace = service.create_workspace(
+        session,
+        name="Budgeted chat workspace",
+        system_prompt="Answer as a study helper.",
+    )
+    rag.chunks = [make_chunk(workspace.id)]
+    conversation = service.create_conversation(session, workspace.id)
+
+    result = asyncio.run(
+        service.chat_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "question",
+        )
+    )
+
+    assert result.answer == "answer-1"
+    assert result.sources == []
+    assert chat.calls[0]["system_prompt"] == "Answer as a study helper."
 
 
 def test_llm_failure_does_not_save_partial_exchange(session):

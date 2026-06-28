@@ -7,7 +7,7 @@ from app.services.document_service import (
     ParsedDocumentFile,
     SavedDocumentFile,
 )
-from app.services.rag_service import IndexedDocument, RAGSource
+from app.services.rag_service import IndexedDocument, RAGContextBuildResult, RAGSource
 
 
 class FakeRAGService:
@@ -17,10 +17,12 @@ class FakeRAGService:
         *,
         indexed_chunk_count: int = 2,
         deleted_chunk_count: int = 2,
+        context_chunk_limit: int | None = None,
     ):
         self.chunks = chunks or []
         self.indexed_chunk_count = indexed_chunk_count
         self.deleted_chunk_count = deleted_chunk_count
+        self.context_chunk_limit = context_chunk_limit
         self.indexed_workspace_id = None
         self.retrieve_calls = []
         self.index_calls = []
@@ -65,9 +67,27 @@ class FakeRAGService:
         )
 
     def build_system_prompt(self, chunks, base_prompt):
-        if not chunks:
-            return base_prompt
-        return f"{base_prompt}\n\nContext: {chunks[0].text}"
+        return self.build_context_prompt(chunks, base_prompt).system_prompt
+
+    def build_context_prompt(self, chunks, base_prompt, max_context_chars=None):
+        used_chunks = (
+            list(chunks)
+            if self.context_chunk_limit is None
+            else list(chunks[: self.context_chunk_limit])
+        )
+        sources = [self.to_source(chunk) for chunk in used_chunks]
+        system_prompt = base_prompt
+        if used_chunks:
+            context = "\n".join(chunk.text for chunk in used_chunks)
+            system_prompt = f"{base_prompt}\n\nContext: {context}"
+        return RAGContextBuildResult(
+            system_prompt=system_prompt,
+            chunks=used_chunks,
+            sources=sources,
+            retrieved_count=len(chunks),
+            dropped_count=len(chunks) - len(used_chunks),
+            context_char_count=sum(len(chunk.text) for chunk in used_chunks),
+        )
 
 
 class FakeChatService:

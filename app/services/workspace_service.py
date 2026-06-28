@@ -178,19 +178,23 @@ class WorkspaceService:
             top_k=workspace.top_k,
             similarity_threshold=workspace.similarity_threshold,
         )
-        sources = [self.rag.to_source(chunk) for chunk in chunks]
+        context_prompt = None
+        if chunks:
+            context_prompt = self.rag.build_context_prompt(
+                chunks,
+                base_prompt=workspace.system_prompt,
+            )
+        sources = [] if context_prompt is None else context_prompt.sources
+        has_context = context_prompt is not None and bool(context_prompt.chunks)
 
-        if not chunks and workspace.chat_mode == "query":
+        if not has_context and workspace.chat_mode == "query":
             answer = NO_CONTEXT_ANSWER
             provider = None
             model = None
         else:
             system_prompt = workspace.system_prompt
-            if chunks:
-                system_prompt = self.rag.build_system_prompt(
-                    chunks,
-                    base_prompt=workspace.system_prompt,
-                )
+            if has_context:
+                system_prompt = context_prompt.system_prompt
             chat_result = await self.chat.chat(
                 message=normalized_message,
                 system_prompt=system_prompt,

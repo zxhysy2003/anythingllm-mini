@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     chunk_overlap: int = 60
     top_k: int = 5
     similarity_threshold: float = 0.75
+    max_context_chars: int = 4000
 
     agent_max_steps: int = 5
 
@@ -51,7 +52,7 @@ class Settings(BaseSettings):
     def normalize_deepseek_base_url(cls, value: str) -> str:
         return value.rstrip("/")
 
-    @field_validator("chunk_size", "top_k")
+    @field_validator("chunk_size", "top_k", "max_context_chars")
     @classmethod
     def require_positive_integer(cls, value: int) -> int:
         if value <= 0:

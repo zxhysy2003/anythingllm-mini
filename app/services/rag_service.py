@@ -30,6 +30,15 @@ class RAGQueryResult(BaseModel):
     sources: list[RAGSource]
 
 
+class RAGContextBuildResult(BaseModel):
+    system_prompt: str
+    chunks: list[RetrievedChunk]
+    sources: list[RAGSource]
+    retrieved_count: int
+    dropped_count: int
+    context_char_count: int
+
+
 class RAGService:
     def __init__(
         self,
@@ -88,15 +97,19 @@ class RAGService:
         if not retrieved_chunks:
             return self._no_context_result(normalized_question)
 
+        context_prompt = self.build_context_prompt(retrieved_chunks)
+        if not context_prompt.chunks:
+            return self._no_context_result(normalized_question)
+
         chat_result = await self.chat.chat(
             message=normalized_question,
-            system_prompt=self.build_system_prompt(retrieved_chunks),
+            system_prompt=context_prompt.system_prompt,
             temperature=0,
         )
         return RAGQueryResult(
             question=normalized_question,
             answer=chat_result.answer,
-            sources=[self.to_source(chunk) for chunk in retrieved_chunks],
+            sources=context_prompt.sources,
         )
 
     async def retrieve(
@@ -135,15 +148,38 @@ class RAGService:
         chunks: list[RetrievedChunk],
         base_prompt: str | None = None,
     ) -> str:
+        return self.build_context_prompt(
+            chunks,
+            base_prompt=base_prompt,
+        ).system_prompt
+
+    def build_context_prompt(
+        self,
+        chunks: list[RetrievedChunk],
+        base_prompt: str | None = None,
+        max_context_chars: int | None = None,
+    ) -> RAGContextBuildResult:
+        budget = (
+            settings.max_context_chars
+            if max_context_chars is None
+            else max_context_chars
+        )
+        if budget <= 0:
+            raise ValueError("max_context_chars must be greater than zero")
+
         context_blocks = []
-        for index, chunk in enumerate(chunks, start=1):
-            context_blocks.append(
-                f"[SOURCE {index}]\n"
-                f"Document: {chunk.original_filename}\n"
-                f"Chunk: {chunk.chunk_index}\n"
-                f"{chunk.text}\n"
-                f"[END SOURCE {index}]"
-            )
+        used_chunks = []
+        context_char_count = 0
+        for chunk in chunks:
+            source_index = len(used_chunks) + 1
+            block = self._source_context_block(source_index, chunk)
+            separator_chars = 2 if context_blocks else 0
+            next_char_count = context_char_count + separator_chars + len(block)
+            if next_char_count > budget:
+                break
+            used_chunks.append(chunk)
+            context_blocks.append(block)
+            context_char_count = next_char_count
 
         context = "\n\n".join(context_blocks)
         rag_prompt = (
@@ -155,8 +191,26 @@ class RAGService:
             f"Reference context:\n{context}"
         )
         if base_prompt is None:
-            return rag_prompt
-        return f"{base_prompt.strip()}\n\n{rag_prompt}"
+            system_prompt = rag_prompt
+        else:
+            system_prompt = f"{base_prompt.strip()}\n\n{rag_prompt}"
+        return RAGContextBuildResult(
+            system_prompt=system_prompt,
+            chunks=used_chunks,
+            sources=[self.to_source(chunk) for chunk in used_chunks],
+            retrieved_count=len(chunks),
+            dropped_count=len(chunks) - len(used_chunks),
+            context_char_count=context_char_count,
+        )
+
+    def _source_context_block(self, index: int, chunk: RetrievedChunk) -> str:
+        return (
+            f"[SOURCE {index}]\n"
+            f"Document: {chunk.original_filename}\n"
+            f"Chunk: {chunk.chunk_index}\n"
+            f"{chunk.text}\n"
+            f"[END SOURCE {index}]"
+        )
 
     def _no_context_result(self, question: str) -> RAGQueryResult:
         return RAGQueryResult(
