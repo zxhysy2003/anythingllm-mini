@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from pathlib import Path
 
 import pytest
@@ -272,7 +273,8 @@ def test_rag_query_without_relevant_chunks_skips_chat():
     assert chat.called is False
 
 
-def test_rag_retrieve_uses_requested_workspace_scope():
+def test_rag_retrieve_uses_requested_workspace_scope(caplog):
+    caplog.set_level(logging.INFO)
     store = FakeStore(results=[retrieved_chunk()])
     service = RAGService(
         embeddings=FakeEmbeddings(),
@@ -295,6 +297,7 @@ def test_rag_retrieve_uses_requested_workspace_scope():
     assert store.workspace_id == workspace_id
     assert store.top_k == 3
     assert store.similarity_threshold == 0.8
+    assert "rag.retrieve.completed" in [record.message for record in caplog.records]
 
 
 def test_rag_delete_document_uses_global_scope_by_default():

@@ -43,6 +43,24 @@ workspace_id + document_id
 本地文件删除前会校验路径位于对应的 `upload_dir/{document_id}` 和
 `parsed_dir/{document_id}` 下，避免根据异常元数据误删其他文件。
 
+Workspace 删除：
+
+```text
+workspace_id
+-> 确认 Workspace 存在
+-> 一次性加载 WorkspaceDocument、Conversation 和 ConversationMessage
+-> 为全部文档构建并校验本地文件删除计划
+-> 按 document_id + workspace_id 删除 Chroma Chunk
+-> 删除本地 upload/parsed 文件
+-> 显式删除 ConversationMessage、Conversation、WorkspaceDocument 和 Workspace
+-> 一次提交数据库事务
+```
+
+这里故意不依赖 SQLite cascade。任一文档路径不安全时会在副作用发生前失败；Chroma
+删除失败时不会删除本地文件或数据库；本地文件删除失败时不会删除数据库。最后数据库
+提交失败时会返回 `WorkspacePersistenceError`，但不会尝试恢复已经删除的 Chroma Chunk
+或本地文件。
+
 Workspace 聊天：
 
 ```text
@@ -72,6 +90,7 @@ POST  /workspaces
 GET   /workspaces
 GET   /workspaces/{workspace_id}
 PATCH /workspaces/{workspace_id}
+DELETE /workspaces/{workspace_id}
 
 POST /workspaces/{workspace_id}/documents/upload
 GET  /workspaces/{workspace_id}/documents
@@ -86,10 +105,22 @@ POST /workspaces/{workspace_id}/conversations/{conversation_id}/chat
 V0 的 `/chat` 和 V2 的 `/documents/upload`、`/rag/query` 继续保留，方便对照各阶段。
 V2 旧接口只访问 `workspace_id="__global__"` 的全局 Chunk，不会读取 Workspace 文档。
 
+## 轻量日志
+
+V3.5 使用 Python 标准库 `logging` 补了一层本地结构化日志，覆盖文档上传/删除、RAG
+检索、Workspace 聊天保存和 Workspace 删除。事件名保持稳定，例如
+`document.upload.completed`、`document.delete.completed`、`rag.retrieve.completed`、
+`workspace.chat.completed`、`workspace.delete.start`、`workspace.delete.completed` 和
+`workspace.delete.failed`。
+
+日志字段只放 `workspace_id`、`document_id`、`conversation_id`、chunk 计数、
+删除计数、`chat_mode` 和 `has_context` 这类排查字段。不记录用户消息全文、文档正文、
+source text、本地文件路径或 API key。
+
 ## 当前边界
 
 V3 仍使用同步请求和单机 SQLite，不包含用户权限、流式回答、历史摘要、问题改写、
-Workspace 删除、软删除和后台索引。文档删除采用硬删除；如果数据库删除提交失败，
-不会尝试恢复已经删除的 Chroma Chunk 或本地文件。旧 V2 Chunk 没有 `workspace_id`，
-不会被 Workspace 范围的查询命中；旧的无 `workspace_id` Chroma 数据也不会被新的 V2
-全局检索命中，学习环境可以清空 `storage/chroma` 后重新上传。
+软删除和后台索引。文档删除和 Workspace 删除都采用硬删除；如果最后数据库删除提交
+失败，不会尝试恢复已经删除的 Chroma Chunk 或本地文件。旧 V2 Chunk 没有
+`workspace_id`，不会被 Workspace 范围的查询命中；旧的无 `workspace_id` Chroma 数据
+也不会被新的 V2 全局检索命中，学习环境可以清空 `storage/chroma` 后重新上传。

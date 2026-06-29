@@ -10,6 +10,7 @@ from app.api.schemas.workspaces import (
     ConversationRead,
     WorkspaceChatRequest,
     WorkspaceCreate,
+    WorkspaceDeleteResponse,
     WorkspaceDocumentDeleteResponse,
     WorkspaceDocumentRead,
     WorkspaceRead,
@@ -30,6 +31,7 @@ from app.services.workspace_document_service import (
 )
 from app.services.workspace_service import (
     WorkspaceChatResult,
+    WorkspaceDeleteResult,
     workspace_service,
 )
 
@@ -77,6 +79,21 @@ def update_workspace(
             request.model_dump(exclude_unset=True, exclude_none=True),
         )
     except (ValueError, WorkspaceNotFoundError, WorkspacePersistenceError) as exc:
+        raise to_http_exception(exc) from exc
+
+
+@router.delete("/{workspace_id}", response_model=WorkspaceDeleteResponse)
+async def delete_workspace(
+    workspace_id: str,
+    session: SessionDependency,
+) -> WorkspaceDeleteResult:
+    try:
+        return await workspace_service.delete_workspace(session, workspace_id)
+    except (
+        WorkspaceNotFoundError,
+        WorkspacePersistenceError,
+        RAGIndexError,
+    ) as exc:
         raise to_http_exception(exc) from exc
 
 

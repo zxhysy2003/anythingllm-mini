@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from io import BytesIO
 from pathlib import Path
 
@@ -49,7 +50,12 @@ def test_workspace_document_is_indexed_and_registered(session):
     assert Path(document.upload_path).name == "guide.txt"
 
 
-def test_workspace_document_delete_removes_index_files_and_record(session, tmp_path):
+def test_workspace_document_delete_removes_index_files_and_record(
+    session,
+    tmp_path,
+    caplog,
+):
+    caplog.set_level(logging.INFO)
     rag = FakeRAGService()
     service = WorkspaceDocumentService(
         documents=DocumentService(
@@ -79,6 +85,10 @@ def test_workspace_document_delete_removes_index_files_and_record(session, tmp_p
     assert not parsed_path.exists()
     assert not upload_path.parent.exists()
     assert not parsed_path.parent.exists()
+    events = [record.message for record in caplog.records]
+    assert "document.upload.completed" in events
+    assert "document.delete.completed" in events
+    assert str(tmp_path) not in caplog.text
 
 
 def test_workspace_document_delete_allows_missing_local_files(session, tmp_path):

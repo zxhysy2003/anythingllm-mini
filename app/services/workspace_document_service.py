@@ -1,3 +1,4 @@
+import logging
 from contextlib import suppress
 
 from fastapi import UploadFile
@@ -14,6 +15,8 @@ from app.services.exceptions import (
     WorkspacePersistenceError,
 )
 from app.services.rag_service import RAGService, rag_service
+
+logger = logging.getLogger(__name__)
 
 
 class WorkspaceDocumentDeleteResult(BaseModel):
@@ -92,6 +95,15 @@ class WorkspaceDocumentService:
             raise WorkspacePersistenceError(
                 "failed to refresh workspace document"
             ) from exc
+        logger.info(
+            "document.upload.completed",
+            extra={
+                "event": "document.upload.completed",
+                "workspace_id": workspace_id,
+                "document_id": document.id,
+                "chunk_count": document.chunk_count,
+            },
+        )
         return document
 
     async def delete_document(
@@ -143,6 +155,17 @@ class WorkspaceDocumentService:
             raise WorkspacePersistenceError(
                 "failed to delete workspace document"
             ) from exc
+        logger.info(
+            "document.delete.completed",
+            extra={
+                "event": "document.delete.completed",
+                "workspace_id": workspace_id,
+                "document_id": document_id,
+                "deleted_chunks": deleted_chunks,
+                "upload_file_deleted": result.upload_file_deleted,
+                "parsed_file_deleted": result.parsed_file_deleted,
+            },
+        )
         return result
 
     def _get_workspace(self, session: Session, workspace_id: str) -> Workspace:

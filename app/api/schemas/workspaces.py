@@ -65,6 +65,16 @@ class WorkspaceRead(BaseModel):
     updated_at: datetime
 
 
+class WorkspaceDeleteResponse(BaseModel):
+    id: str
+    deleted_documents: int
+    deleted_conversations: int
+    deleted_messages: int
+    deleted_chunks: int
+    upload_files_deleted: int
+    parsed_files_deleted: int
+
+
 class ConversationRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

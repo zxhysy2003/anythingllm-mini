@@ -23,6 +23,7 @@ def workspace_api(tmp_path, monkeypatch, session_override):
     workspace_service = WorkspaceService(
         rag=rag,
         chat=FakeChatService(echo=True),
+        documents=document_service,
     )
     workspace_document_service = WorkspaceDocumentService(
         documents=document_service,
@@ -170,6 +171,62 @@ def test_workspace_document_delete_removes_record_files_and_index(workspace_api)
     assert client.get(f"/workspaces/{workspace['id']}/documents").json() == []
 
 
+def test_workspace_delete_removes_documents_conversations_and_returns_counts(
+    workspace_api,
+):
+    client, rag = workspace_api
+    workspace = create_workspace(client)
+    upload_response = client.post(
+        f"/workspaces/{workspace['id']}/documents/upload",
+        files={"file": ("guide.txt", b"hello workspace", "text/plain")},
+    )
+    document = upload_response.json()
+    upload_path = (
+        rag.document_service.upload_dir / document["id"] / document["stored_filename"]
+    )
+    parsed_path = (
+        rag.document_service.parsed_dir
+        / document["id"]
+        / f"{Path(document['stored_filename']).stem}.txt"
+    )
+    conversation_response = client.post(f"/workspaces/{workspace['id']}/conversations")
+    conversation = conversation_response.json()
+    chat_response = client.post(
+        f"/workspaces/{workspace['id']}/conversations/" f"{conversation['id']}/chat",
+        json={"message": "hello"},
+    )
+    assert chat_response.status_code == 200
+
+    delete_response = client.delete(f"/workspaces/{workspace['id']}")
+
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {
+        "id": workspace["id"],
+        "deleted_documents": 1,
+        "deleted_conversations": 1,
+        "deleted_messages": 2,
+        "deleted_chunks": 1,
+        "upload_files_deleted": 1,
+        "parsed_files_deleted": 1,
+    }
+    assert "upload_path" not in delete_response.json()
+    assert "parsed_path" not in delete_response.json()
+    assert rag.deleted_documents == [(document["id"], workspace["id"])]
+    assert not upload_path.exists()
+    assert not parsed_path.exists()
+    assert client.get(f"/workspaces/{workspace['id']}").status_code == 404
+    assert client.get(f"/workspaces/{workspace['id']}/documents").status_code == 404
+    assert client.get(f"/workspaces/{workspace['id']}/conversations").status_code == 404
+
+
+def test_workspace_delete_returns_not_found_for_missing_workspace(workspace_api):
+    client, _ = workspace_api
+
+    response = client.delete(f"/workspaces/{'f' * 32}")
+
+    assert response.status_code == 404
+
+
 def test_workspace_document_delete_returns_not_found_for_missing_scope(workspace_api):
     client, rag = workspace_api
     first_workspace = create_workspace(client, name="First")
@@ -210,6 +267,7 @@ def test_workspace_openapi_routes_are_registered():
     schema = app.openapi()
 
     assert "/workspaces" in schema["paths"]
+    assert "delete" in schema["paths"]["/workspaces/{workspace_id}"]
     assert "/workspaces/{workspace_id}/documents/upload" in schema["paths"]
     assert "/workspaces/{workspace_id}/documents/{document_id}" in schema["paths"]
     assert (

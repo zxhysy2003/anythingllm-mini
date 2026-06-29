@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 
 from pydantic import BaseModel
@@ -11,10 +12,17 @@ from app.models.conversation import (
     Conversation,
     ConversationMessage,
 )
+from app.models.document import WorkspaceDocument
 from app.models.workspace import Workspace, utc_now
 from app.services.chat_service import ChatService, chat_service
+from app.services.document_service import (
+    DocumentFileDeletionPlan,
+    DocumentService,
+    document_service,
+)
 from app.services.exceptions import (
     ConversationNotFoundError,
+    RAGIndexError,
     WorkspaceNotFoundError,
     WorkspacePersistenceError,
 )
@@ -26,6 +34,7 @@ from app.services.rag_service import (
 )
 
 AUTO_TITLE_LENGTH = 50
+logger = logging.getLogger(__name__)
 
 
 class WorkspaceChatResult(BaseModel):
@@ -37,14 +46,26 @@ class WorkspaceChatResult(BaseModel):
     model: str | None
 
 
+class WorkspaceDeleteResult(BaseModel):
+    id: str
+    deleted_documents: int
+    deleted_conversations: int
+    deleted_messages: int
+    deleted_chunks: int
+    upload_files_deleted: int
+    parsed_files_deleted: int
+
+
 class WorkspaceService:
     def __init__(
         self,
         rag: RAGService | None = None,
         chat: ChatService | None = None,
+        documents: DocumentService | None = None,
     ):
         self.rag = rag or rag_service
         self.chat = chat or chat_service
+        self.documents = documents or document_service
 
     def create_workspace(
         self,
@@ -74,6 +95,100 @@ class WorkspaceService:
         self._validate_workspace(workspace)
         self._commit_and_refresh(session, workspace)
         return workspace
+
+    async def delete_workspace(
+        self,
+        session: Session,
+        workspace_id: str,
+    ) -> WorkspaceDeleteResult:
+        workspace = self.get_workspace(session, workspace_id)
+        documents = self._load_workspace_documents(session, workspace.id)
+        conversations = self._load_workspace_conversations(session, workspace.id)
+        messages = self._load_workspace_messages(
+            session,
+            [conversation.id for conversation in conversations],
+        )
+
+        logger.info(
+            "workspace.delete.start",
+            extra={
+                "event": "workspace.delete.start",
+                "workspace_id": workspace.id,
+                "document_count": len(documents),
+                "conversation_count": len(conversations),
+                "message_count": len(messages),
+            },
+        )
+
+        try:
+            deletion_plans = await self._build_workspace_deletion_plans(documents)
+        except Exception as exc:
+            self._log_workspace_delete_failed(workspace.id, "validate_paths")
+            raise WorkspacePersistenceError(
+                "failed to delete workspace document files"
+            ) from exc
+
+        try:
+            deleted_chunks = 0
+            for document in documents:
+                deleted_chunks += await self.rag.delete_document(
+                    document.id,
+                    workspace_id=workspace.id,
+                )
+        except RAGIndexError:
+            self._log_workspace_delete_failed(workspace.id, "delete_index")
+            raise
+
+        try:
+            upload_files_deleted = 0
+            parsed_files_deleted = 0
+            for deletion_plan in deletion_plans:
+                deleted_files = await self.documents.delete_document_files(
+                    deletion_plan,
+                )
+                upload_files_deleted += int(deleted_files.upload_file_deleted)
+                parsed_files_deleted += int(deleted_files.parsed_file_deleted)
+        except Exception as exc:
+            self._log_workspace_delete_failed(workspace.id, "delete_files")
+            raise WorkspacePersistenceError(
+                "failed to delete workspace document files"
+            ) from exc
+
+        result = WorkspaceDeleteResult(
+            id=workspace.id,
+            deleted_documents=len(documents),
+            deleted_conversations=len(conversations),
+            deleted_messages=len(messages),
+            deleted_chunks=deleted_chunks,
+            upload_files_deleted=upload_files_deleted,
+            parsed_files_deleted=parsed_files_deleted,
+        )
+        self._delete_workspace_records(
+            session,
+            workspace,
+            documents,
+            conversations,
+            messages,
+        )
+        try:
+            session.commit()
+        except SQLAlchemyError as exc:
+            session.rollback()
+            self._log_workspace_delete_failed(workspace.id, "delete_database")
+            raise WorkspacePersistenceError("failed to delete workspace") from exc
+
+        logger.info(
+            "workspace.delete.completed",
+            extra={
+                "event": "workspace.delete.completed",
+                "workspace_id": result.id,
+                "deleted_documents": result.deleted_documents,
+                "deleted_conversations": result.deleted_conversations,
+                "deleted_messages": result.deleted_messages,
+                "deleted_chunks": result.deleted_chunks,
+            },
+        )
+        return result
 
     def list_workspaces(self, session: Session) -> list[Workspace]:
         statement = select(Workspace).order_by(Workspace.created_at.desc())
@@ -214,6 +329,17 @@ class WorkspaceService:
             provider,
             model,
         )
+        logger.info(
+            "workspace.chat.completed",
+            extra={
+                "event": "workspace.chat.completed",
+                "workspace_id": workspace.id,
+                "conversation_id": conversation.id,
+                "chat_mode": workspace.chat_mode,
+                "has_context": has_context,
+                "source_count": len(sources),
+            },
+        )
         return WorkspaceChatResult(
             conversation_id=conversation.id,
             message=normalized_message,
@@ -239,6 +365,85 @@ class WorkspaceService:
                 f"conversation not found in workspace: {conversation_id}"
             )
         return conversation
+
+    def _load_workspace_documents(
+        self,
+        session: Session,
+        workspace_id: str,
+    ) -> list[WorkspaceDocument]:
+        statement = (
+            select(WorkspaceDocument)
+            .where(WorkspaceDocument.workspace_id == workspace_id)
+            .order_by(WorkspaceDocument.created_at.asc())
+        )
+        return list(session.exec(statement).all())
+
+    def _load_workspace_conversations(
+        self,
+        session: Session,
+        workspace_id: str,
+    ) -> list[Conversation]:
+        statement = (
+            select(Conversation)
+            .where(Conversation.workspace_id == workspace_id)
+            .order_by(Conversation.created_at.asc())
+        )
+        return list(session.exec(statement).all())
+
+    def _load_workspace_messages(
+        self,
+        session: Session,
+        conversation_ids: list[str],
+    ) -> list[ConversationMessage]:
+        if not conversation_ids:
+            return []
+        statement = (
+            select(ConversationMessage)
+            .where(ConversationMessage.conversation_id.in_(conversation_ids))
+            .order_by(ConversationMessage.created_at.asc())
+        )
+        return list(session.exec(statement).all())
+
+    async def _build_workspace_deletion_plans(
+        self,
+        documents: list[WorkspaceDocument],
+    ) -> list[DocumentFileDeletionPlan]:
+        deletion_plans = []
+        for document in documents:
+            deletion_plans.append(
+                await self.documents.build_document_file_deletion_plan(
+                    document.id,
+                    document.upload_path,
+                    document.parsed_path,
+                )
+            )
+        return deletion_plans
+
+    def _delete_workspace_records(
+        self,
+        session: Session,
+        workspace: Workspace,
+        documents: list[WorkspaceDocument],
+        conversations: list[Conversation],
+        messages: list[ConversationMessage],
+    ) -> None:
+        for message in messages:
+            session.delete(message)
+        for conversation in conversations:
+            session.delete(conversation)
+        for document in documents:
+            session.delete(document)
+        session.delete(workspace)
+
+    def _log_workspace_delete_failed(self, workspace_id: str, stage: str) -> None:
+        logger.warning(
+            "workspace.delete.failed",
+            extra={
+                "event": "workspace.delete.failed",
+                "workspace_id": workspace_id,
+                "stage": stage,
+            },
+        )
 
     def _load_history(
         self,

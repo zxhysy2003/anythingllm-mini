@@ -1,3 +1,5 @@
+import logging
+
 from pydantic import BaseModel
 
 from app.core.config import settings
@@ -9,6 +11,7 @@ from app.services.document_service import ParsedDocumentFile
 from app.services.exceptions import RAGIndexError, RAGQueryError
 
 NO_CONTEXT_ANSWER = "No indexed document context is available to answer this question."
+logger = logging.getLogger(__name__)
 
 
 class IndexedDocument(BaseModel):
@@ -127,6 +130,15 @@ class RAGService:
             scope = workspace_id or GLOBAL_WORKSPACE_ID
             has_documents = await self.store.has_documents(workspace_id=scope)
             if not has_documents:
+                logger.info(
+                    "rag.retrieve.completed",
+                    extra={
+                        "event": "rag.retrieve.completed",
+                        "workspace_id": scope,
+                        "retrieved_count": 0,
+                        "top_k": settings.top_k if top_k is None else top_k,
+                    },
+                )
                 return []
 
             query_embedding = await self.embeddings.embed_query(normalized_question)
@@ -139,8 +151,25 @@ class RAGService:
                 ),
                 "workspace_id": scope,
             }
-            return await self.store.query(query_embedding, **query_options)
+            chunks = await self.store.query(query_embedding, **query_options)
+            logger.info(
+                "rag.retrieve.completed",
+                extra={
+                    "event": "rag.retrieve.completed",
+                    "workspace_id": scope,
+                    "retrieved_count": len(chunks),
+                    "top_k": query_options["top_k"],
+                },
+            )
+            return chunks
         except Exception as exc:
+            logger.warning(
+                "rag.retrieve.failed",
+                extra={
+                    "event": "rag.retrieve.failed",
+                    "workspace_id": workspace_id or GLOBAL_WORKSPACE_ID,
+                },
+            )
             raise RAGQueryError("failed to retrieve document context") from exc
 
     def build_system_prompt(
