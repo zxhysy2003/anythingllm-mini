@@ -99,8 +99,6 @@ class WorkspaceDocumentRead(BaseModel):
     extension: str
     size_bytes: int
     character_count: int
-    upload_path: str
-    parsed_path: str
     chunk_count: int
     created_at: datetime
 
@@ -110,8 +108,6 @@ class WorkspaceDocumentDeleteResponse(BaseModel):
     workspace_id: str
     original_filename: str
     deleted_chunks: int
-    upload_path: str
-    parsed_path: str
     upload_file_deleted: bool
     parsed_file_deleted: bool
 

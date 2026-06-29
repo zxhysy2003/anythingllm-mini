@@ -17,8 +17,6 @@ class DocumentUploadResult(BaseModel):
     extension: str
     size_bytes: int
     character_count: int
-    upload_path: str
-    parsed_path: str
     chunk_count: int
 
 
@@ -50,7 +48,5 @@ async def upload_document(
         extension=saved_file.extension,
         size_bytes=saved_file.size_bytes,
         character_count=parsed_file.character_count,
-        upload_path=saved_file.upload_path,
-        parsed_path=parsed_file.parsed_path,
         chunk_count=indexed_document.chunk_count,
     )

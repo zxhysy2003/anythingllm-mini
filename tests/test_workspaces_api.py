@@ -15,15 +15,17 @@ from tests.fakes import FakeChatService, FakeRAGService
 @pytest.fixture
 def workspace_api(tmp_path, monkeypatch, session_override):
     rag = FakeRAGService(indexed_chunk_count=1, deleted_chunk_count=1)
+    document_service = DocumentService(
+        upload_dir=tmp_path / "uploads",
+        parsed_dir=tmp_path / "parsed",
+    )
+    rag.document_service = document_service
     workspace_service = WorkspaceService(
         rag=rag,
         chat=FakeChatService(echo=True),
     )
     workspace_document_service = WorkspaceDocumentService(
-        documents=DocumentService(
-            upload_dir=tmp_path / "uploads",
-            parsed_dir=tmp_path / "parsed",
-        ),
+        documents=document_service,
         rag=rag,
     )
     app.dependency_overrides[get_session] = session_override
@@ -116,11 +118,18 @@ def test_workspace_document_upload_is_scoped_and_registered(workspace_api):
     document = response.json()
     assert document["workspace_id"] == workspace["id"]
     assert document["chunk_count"] == 1
+    assert "upload_path" not in document
+    assert "parsed_path" not in document
     assert rag.indexed_workspace_id == workspace["id"]
-    assert Path(document["upload_path"]).read_bytes() == b"hello workspace"
+    upload_path = (
+        rag.document_service.upload_dir / document["id"] / document["stored_filename"]
+    )
+    assert upload_path.read_bytes() == b"hello workspace"
 
     documents = client.get(f"/workspaces/{workspace['id']}/documents").json()
     assert [item["id"] for item in documents] == [document["id"]]
+    assert "upload_path" not in documents[0]
+    assert "parsed_path" not in documents[0]
 
 
 def test_workspace_document_delete_removes_record_files_and_index(workspace_api):
@@ -131,8 +140,14 @@ def test_workspace_document_delete_removes_record_files_and_index(workspace_api)
         files={"file": ("guide.txt", b"hello workspace", "text/plain")},
     )
     document = upload_response.json()
-    upload_path = Path(document["upload_path"])
-    parsed_path = Path(document["parsed_path"])
+    upload_path = (
+        rag.document_service.upload_dir / document["id"] / document["stored_filename"]
+    )
+    parsed_path = (
+        rag.document_service.parsed_dir
+        / document["id"]
+        / f"{Path(document['stored_filename']).stem}.txt"
+    )
 
     delete_response = client.delete(
         f"/workspaces/{workspace['id']}/documents/{document['id']}"
@@ -144,11 +159,11 @@ def test_workspace_document_delete_removes_record_files_and_index(workspace_api)
         "workspace_id": workspace["id"],
         "original_filename": "guide.txt",
         "deleted_chunks": 1,
-        "upload_path": document["upload_path"],
-        "parsed_path": document["parsed_path"],
         "upload_file_deleted": True,
         "parsed_file_deleted": True,
     }
+    assert "upload_path" not in delete_response.json()
+    assert "parsed_path" not in delete_response.json()
     assert rag.deleted_documents == [(document["id"], workspace["id"])]
     assert not upload_path.exists()
     assert not parsed_path.exists()

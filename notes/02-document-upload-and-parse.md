@@ -86,7 +86,8 @@ Content-Type: multipart/form-data
 UploadFile -> 保存原文件 -> 解析文本 -> 返回 metadata
 ```
 
-成功时返回 HTTP `201 Created`：
+成功时返回 HTTP `201 Created`。当前代码进入 V2 后，旧 `/documents/upload` 会继续完成
+索引并返回 `chunk_count`；纯 V1 阶段只需要保存和解析 metadata。
 
 ```json
 {
@@ -95,13 +96,13 @@ UploadFile -> 保存原文件 -> 解析文本 -> 返回 metadata
   "extension": ".txt",
   "size_bytes": 1024,
   "character_count": 980,
-  "upload_path": "/.../storage/uploads/8c8f.../report.txt",
-  "parsed_path": "/.../storage/parsed/8c8f.../report.txt"
+  "chunk_count": 3
 }
 ```
 
-API 不返回完整解析文本，避免大文档产生过大的响应。当前返回本地路径仅用于学习
-和调试；生产环境通常应返回资源 ID 或下载 URL。
+API 不返回完整解析文本，避免大文档产生过大的响应。V3.5 后，普通 HTTP 响应也不再
+暴露本地 `upload_path` 或 `parsed_path`，避免外部客户端依赖服务端文件系统路径。
+这些路径仍保存在内部模型和数据库中，供删除、reconcile 和调试测试使用。
 
 主要错误行为：
 

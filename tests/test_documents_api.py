@@ -1,5 +1,4 @@
 import asyncio
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -45,8 +44,13 @@ def test_upload_document_saves_and_parses_txt(temp_document_service):
     assert result["character_count"] == len("hello\nworld")
     assert result["chunk_count"] == 1
     assert "text" not in result
-    assert Path(result["upload_path"]).read_bytes() == b"hello\nworld"
-    assert Path(result["parsed_path"]).read_text(encoding="utf-8") == "hello\nworld"
+    assert "upload_path" not in result
+    assert "parsed_path" not in result
+
+    upload_path = temp_document_service.upload_dir / result["id"] / "notes.txt"
+    parsed_path = temp_document_service.parsed_dir / result["id"] / "notes.txt"
+    assert upload_path.read_bytes() == b"hello\nworld"
+    assert parsed_path.read_text(encoding="utf-8") == "hello\nworld"
 
 
 def test_upload_document_indexes_parsed_text_in_chroma(tmp_path, monkeypatch):
