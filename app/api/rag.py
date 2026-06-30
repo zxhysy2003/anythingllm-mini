@@ -30,7 +30,17 @@ class RAGQueryRequest(BaseModel):
         return question
 
 
-@router.post("/query", response_model=RAGQueryResult)
+@router.post(
+    "/query",
+    response_model=RAGQueryResult,
+    deprecated=True,
+    summary="Legacy V2 global RAG query",
+    description=(
+        "Legacy V2 learning endpoint that queries the global RAG scope. "
+        "For V4 and workspace-aware chat, use "
+        "`/workspaces/{workspace_id}/conversations/{conversation_id}/chat`."
+    ),
+)
 async def query_documents(request: RAGQueryRequest) -> RAGQueryResult:
     try:
         return await rag_service.query(request.question)

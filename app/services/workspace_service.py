@@ -1,4 +1,5 @@
 import logging
+from time import perf_counter
 from typing import Any
 
 from pydantic import BaseModel
@@ -37,6 +38,19 @@ AUTO_TITLE_LENGTH = 50
 logger = logging.getLogger(__name__)
 
 
+class WorkspaceChatMetrics(BaseModel):
+    retrieved_count: int
+    used_source_count: int
+    dropped_count: int
+    context_char_count: int
+    has_context: bool
+    query_refused: bool
+    llm_called: bool
+    retrieval_latency_ms: int
+    llm_latency_ms: int
+    total_latency_ms: int
+
+
 class WorkspaceChatResult(BaseModel):
     conversation_id: str
     message: str
@@ -44,6 +58,7 @@ class WorkspaceChatResult(BaseModel):
     sources: list[RAGSource]
     provider: str | None
     model: str | None
+    metrics: WorkspaceChatMetrics
 
 
 class WorkspaceDeleteResult(BaseModel):
@@ -275,6 +290,7 @@ class WorkspaceService:
         conversation_id: str,
         message: str,
     ) -> WorkspaceChatResult:
+        total_started_at = perf_counter()
         normalized_message = self._require_text(message, "message")
         workspace = self.get_workspace(session, workspace_id)
         conversation = self._get_conversation(
@@ -287,12 +303,14 @@ class WorkspaceService:
             conversation_id,
             workspace.history_limit,
         )
+        retrieval_started_at = perf_counter()
         chunks = await self.rag.retrieve(
             normalized_message,
             workspace_id=workspace.id,
             top_k=workspace.top_k,
             similarity_threshold=workspace.similarity_threshold,
         )
+        retrieval_latency_ms = self._elapsed_ms(retrieval_started_at)
         context_prompt = None
         if chunks:
             context_prompt = self.rag.build_context_prompt(
@@ -301,8 +319,18 @@ class WorkspaceService:
             )
         sources = [] if context_prompt is None else context_prompt.sources
         has_context = context_prompt is not None and bool(context_prompt.chunks)
+        retrieved_count = (
+            len(chunks) if context_prompt is None else context_prompt.retrieved_count
+        )
+        dropped_count = 0 if context_prompt is None else context_prompt.dropped_count
+        context_char_count = (
+            0 if context_prompt is None else context_prompt.context_char_count
+        )
+        query_refused = not has_context and workspace.chat_mode == "query"
+        llm_called = False
+        llm_latency_ms = 0
 
-        if not has_context and workspace.chat_mode == "query":
+        if query_refused:
             answer = NO_CONTEXT_ANSWER
             provider = None
             model = None
@@ -310,15 +338,31 @@ class WorkspaceService:
             system_prompt = workspace.system_prompt
             if has_context:
                 system_prompt = context_prompt.system_prompt
+            llm_started_at = perf_counter()
             chat_result = await self.chat.chat(
                 message=normalized_message,
                 system_prompt=system_prompt,
                 history=history,
                 temperature=workspace.temperature,
             )
+            llm_latency_ms = self._elapsed_ms(llm_started_at)
+            llm_called = True
             answer = chat_result.answer
             provider = chat_result.provider
             model = chat_result.model
+
+        metrics = WorkspaceChatMetrics(
+            retrieved_count=retrieved_count,
+            used_source_count=len(sources),
+            dropped_count=dropped_count,
+            context_char_count=context_char_count,
+            has_context=has_context,
+            query_refused=query_refused,
+            llm_called=llm_called,
+            retrieval_latency_ms=retrieval_latency_ms,
+            llm_latency_ms=llm_latency_ms,
+            total_latency_ms=self._elapsed_ms(total_started_at),
+        )
 
         self._save_exchange(
             session,
@@ -328,6 +372,7 @@ class WorkspaceService:
             sources,
             provider,
             model,
+            metrics,
         )
         logger.info(
             "workspace.chat.completed",
@@ -338,6 +383,8 @@ class WorkspaceService:
                 "chat_mode": workspace.chat_mode,
                 "has_context": has_context,
                 "source_count": len(sources),
+                "query_refused": query_refused,
+                "llm_called": llm_called,
             },
         )
         return WorkspaceChatResult(
@@ -347,6 +394,7 @@ class WorkspaceService:
             sources=sources,
             provider=provider,
             model=model,
+            metrics=metrics,
         )
 
     def _get_conversation(
@@ -476,6 +524,7 @@ class WorkspaceService:
         sources: list[RAGSource],
         provider: str | None,
         model: str | None,
+        metrics: WorkspaceChatMetrics,
     ) -> None:
         source_data = [source.model_dump(mode="json") for source in sources]
         user_message = ConversationMessage(
@@ -488,6 +537,7 @@ class WorkspaceService:
             role="assistant",
             content=assistant_content,
             sources=source_data,
+            metrics=metrics.model_dump(mode="json"),
             provider=provider,
             model=model,
         )
@@ -533,6 +583,9 @@ class WorkspaceService:
         if not normalized:
             raise ValueError(f"{field} cannot be empty")
         return normalized
+
+    def _elapsed_ms(self, started_at: float) -> int:
+        return max(0, round((perf_counter() - started_at) * 1000))
 
 
 workspace_service = WorkspaceService()

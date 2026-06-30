@@ -77,9 +77,15 @@ def test_rag_query_endpoint_maps_retrieval_failure(monkeypatch):
 
 
 def test_rag_query_openapi_schema_is_registered():
+    app.openapi_schema = None
     schema = app.openapi()
     operation = schema["paths"]["/rag/query"]["post"]
 
     assert operation["tags"] == ["rag"]
+    assert operation["deprecated"] is True
+    assert "Legacy V2" in operation["summary"]
+    assert "/workspaces/{workspace_id}/conversations/{conversation_id}/chat" in (
+        operation["description"]
+    )
     assert "RAGQueryRequest" in str(operation["requestBody"])
     assert "200" in operation["responses"]

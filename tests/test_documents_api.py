@@ -171,8 +171,14 @@ def test_upload_document_requires_multipart_file():
 
 
 def test_upload_document_openapi_schema_uses_multipart():
+    app.openapi_schema = None
     schema = app.openapi()
     upload_operation = schema["paths"]["/documents/upload"]["post"]
 
+    assert upload_operation["deprecated"] is True
+    assert "Legacy V2" in upload_operation["summary"]
+    assert "/workspaces/{workspace_id}/documents/upload" in (
+        upload_operation["description"]
+    )
     assert "multipart/form-data" in upload_operation["requestBody"]["content"]
     assert "201" in upload_operation["responses"]

@@ -53,6 +53,12 @@ def make_chunk(
     )
 
 
+def assert_latency_metrics(metrics) -> None:
+    assert metrics.retrieval_latency_ms >= 0
+    assert metrics.llm_latency_ms >= 0
+    assert metrics.total_latency_ms >= 0
+
+
 def test_workspace_chat_loads_limited_history_and_auto_titles(session):
     rag = FakeRAGService()
     chat = FakeChatService()
@@ -142,12 +148,23 @@ def test_query_mode_without_context_skips_llm_and_saves_refusal(session):
     assert result.answer == NO_CONTEXT_ANSWER
     assert result.provider is None
     assert result.sources == []
+    assert result.metrics.retrieved_count == 0
+    assert result.metrics.used_source_count == 0
+    assert result.metrics.dropped_count == 0
+    assert result.metrics.context_char_count == 0
+    assert result.metrics.has_context is False
+    assert result.metrics.query_refused is True
+    assert result.metrics.llm_called is False
+    assert_latency_metrics(result.metrics)
     assert chat.calls == []
     messages = service.list_messages(session, workspace.id, conversation.id)
     assert [message.content for message in messages] == [
         "unknown question",
         NO_CONTEXT_ANSWER,
     ]
+    assert messages[0].metrics == {}
+    assert messages[1].metrics["query_refused"] is True
+    assert messages[1].metrics["llm_called"] is False
 
 
 def test_rag_sources_and_model_metadata_are_persisted(session):
@@ -171,6 +188,16 @@ def test_rag_sources_and_model_metadata_are_persisted(session):
     assert assistant_message.sources[0]["score"] == 0.93
     assert assistant_message.provider == "deepseek"
     assert assistant_message.model == "deepseek-v4-flash"
+    assert result.metrics.retrieved_count == 1
+    assert result.metrics.used_source_count == 1
+    assert result.metrics.dropped_count == 0
+    assert result.metrics.context_char_count == len("Workspace-scoped context.")
+    assert result.metrics.has_context is True
+    assert result.metrics.query_refused is False
+    assert result.metrics.llm_called is True
+    assert_latency_metrics(result.metrics)
+    assert assistant_message.metrics == result.metrics.model_dump(mode="json")
+    assert "Workspace-scoped context." not in str(assistant_message.metrics)
     assert "Workspace-scoped context." in service.chat.calls[0]["system_prompt"]
 
 
@@ -209,6 +236,13 @@ def test_workspace_chat_returns_and_persists_only_budgeted_sources(session):
     assert [source["text"] for source in assistant_message.sources] == [
         "first workspace context"
     ]
+    assert result.metrics.retrieved_count == 2
+    assert result.metrics.used_source_count == 1
+    assert result.metrics.dropped_count == 1
+    assert result.metrics.context_char_count == len("first workspace context")
+    assert assistant_message.metrics["retrieved_count"] == 2
+    assert assistant_message.metrics["used_source_count"] == 1
+    assert assistant_message.metrics["dropped_count"] == 1
     assert "first workspace context" in chat.calls[0]["system_prompt"]
     assert "second workspace context" not in chat.calls[0]["system_prompt"]
 
@@ -239,10 +273,21 @@ def test_query_mode_without_budgeted_context_skips_llm_and_saves_refusal(session
     assert result.sources == []
     assert result.provider is None
     assert chat.calls == []
+    assert result.metrics.retrieved_count == 1
+    assert result.metrics.used_source_count == 0
+    assert result.metrics.dropped_count == 1
+    assert result.metrics.context_char_count == 0
+    assert result.metrics.has_context is False
+    assert result.metrics.query_refused is True
+    assert result.metrics.llm_called is False
+    assert_latency_metrics(result.metrics)
     assert [message.content for message in messages] == [
         "question",
         NO_CONTEXT_ANSWER,
     ]
+    assert messages[0].metrics == {}
+    assert messages[1].metrics["query_refused"] is True
+    assert messages[1].metrics["llm_called"] is False
 
 
 def test_chat_mode_without_budgeted_context_falls_back_to_workspace_prompt(session):
@@ -268,6 +313,14 @@ def test_chat_mode_without_budgeted_context_falls_back_to_workspace_prompt(sessi
 
     assert result.answer == "answer-1"
     assert result.sources == []
+    assert result.metrics.retrieved_count == 1
+    assert result.metrics.used_source_count == 0
+    assert result.metrics.dropped_count == 1
+    assert result.metrics.context_char_count == 0
+    assert result.metrics.has_context is False
+    assert result.metrics.query_refused is False
+    assert result.metrics.llm_called is True
+    assert_latency_metrics(result.metrics)
     assert chat.calls[0]["system_prompt"] == "Answer as a study helper."
 
 

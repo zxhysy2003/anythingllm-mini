@@ -70,7 +70,8 @@ def test_workspace_conversation_chat_http_flow(workspace_api):
     )
 
     assert chat_response.status_code == 200
-    assert chat_response.json() == {
+    chat_payload = chat_response.json()
+    expected_chat_payload = {
         "conversation_id": conversation["id"],
         "message": "hello",
         "answer": "echo: hello",
@@ -78,12 +79,27 @@ def test_workspace_conversation_chat_http_flow(workspace_api):
         "provider": "deepseek",
         "model": "deepseek-v4-flash",
     }
+    for key, value in expected_chat_payload.items():
+        assert chat_payload[key] == value
+    assert chat_payload["metrics"]["retrieved_count"] == 0
+    assert chat_payload["metrics"]["used_source_count"] == 0
+    assert chat_payload["metrics"]["dropped_count"] == 0
+    assert chat_payload["metrics"]["context_char_count"] == 0
+    assert chat_payload["metrics"]["has_context"] is False
+    assert chat_payload["metrics"]["query_refused"] is False
+    assert chat_payload["metrics"]["llm_called"] is True
+    assert chat_payload["metrics"]["retrieval_latency_ms"] >= 0
+    assert chat_payload["metrics"]["llm_latency_ms"] >= 0
+    assert chat_payload["metrics"]["total_latency_ms"] >= 0
     assert messages_response.status_code == 200
-    assert [item["role"] for item in messages_response.json()] == [
+    messages = messages_response.json()
+    assert [item["role"] for item in messages] == [
         "user",
         "assistant",
     ]
-    assert messages_response.json()[1]["provider"] == "deepseek"
+    assert messages[0]["metrics"] == {}
+    assert messages[1]["provider"] == "deepseek"
+    assert messages[1]["metrics"] == chat_payload["metrics"]
 
     conversations = client.get(f"/workspaces/{workspace['id']}/conversations").json()
     assert conversations[0]["title"] == "hello"
@@ -274,5 +290,9 @@ def test_workspace_openapi_routes_are_registered():
         "/workspaces/{workspace_id}/conversations/{conversation_id}/chat"
         in schema["paths"]
     )
+    chat = schema["paths"][
+        "/workspaces/{workspace_id}/conversations/{conversation_id}/chat"
+    ]["post"]
+    assert chat.get("deprecated") is not True
     upload = schema["paths"]["/workspaces/{workspace_id}/documents/upload"]["post"]
     assert "multipart/form-data" in upload["requestBody"]["content"]

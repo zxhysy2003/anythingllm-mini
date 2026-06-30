@@ -4,7 +4,6 @@ from app.api import chat as chat_api
 from app.main import app
 from app.services.chat_service import ChatResult, ChatServiceError
 
-
 client = TestClient(app)
 
 
@@ -62,8 +61,15 @@ def test_chat_endpoint_maps_service_error(monkeypatch):
 
 
 def test_chat_endpoint_schema_has_example():
+    app.openapi_schema = None
     schema = app.openapi()
 
+    operation = schema["paths"]["/chat"]["post"]
+    assert operation["deprecated"] is True
+    assert "Legacy V0" in operation["summary"]
+    assert "/workspaces/{workspace_id}/conversations/{conversation_id}/chat" in (
+        operation["description"]
+    )
     chat_request_schema = schema["components"]["schemas"]["ChatRequest"]
     assert chat_request_schema["examples"][0]["message"]
     assert chat_request_schema["examples"][0]["temperature"] == 0.7

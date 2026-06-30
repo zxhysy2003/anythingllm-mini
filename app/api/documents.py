@@ -24,6 +24,13 @@ class DocumentUploadResult(BaseModel):
     "/upload",
     response_model=DocumentUploadResult,
     status_code=status.HTTP_201_CREATED,
+    deprecated=True,
+    summary="Legacy V2 global document upload",
+    description=(
+        "Legacy V2 learning endpoint that indexes documents into the global "
+        "RAG scope. For V4 and workspace-aware document use, upload through "
+        "`/workspaces/{workspace_id}/documents/upload`."
+    ),
 )
 async def upload_document(
     file: Annotated[

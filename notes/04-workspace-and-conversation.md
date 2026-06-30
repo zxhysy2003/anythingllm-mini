@@ -69,7 +69,7 @@ Workspace 聊天：
 -> 只检索当前 Workspace 的 Chunk
 -> 按 chat/query 模式组织 Prompt
 -> 调用 DeepSeek 或返回无上下文提示
--> 事务保存 user 和 assistant 消息
+-> 事务保存 user 和 assistant 消息，以及 assistant 调试 metrics
 ```
 
 ## Chat 与 Query
@@ -82,6 +82,12 @@ Workspace 独立保存 `system_prompt`、`temperature`、`history_limit`、
 
 `history_limit` 表示历史轮数。一轮包含一条 user 消息和一条 assistant 消息，传给
 DeepSeek 前会恢复为按时间正序排列的 message 列表。
+
+Workspace chat 会在响应和 assistant message 上保存基础 metrics：检索到的 Chunk 数、
+实际使用的 source 数、预算丢弃数、context 字符数、是否有可用上下文、query 模式是否
+拒答、是否调用 LLM，以及 retrieval/LLM/total latency。user message 的 `metrics`
+保持 `{}`。这些 metrics 只用于本地调试，不记录用户消息、文档正文、source text、
+本地文件路径或 API key。
 
 ## HTTP 接口
 
@@ -103,7 +109,9 @@ POST /workspaces/{workspace_id}/conversations/{conversation_id}/chat
 ```
 
 V0 的 `/chat` 和 V2 的 `/documents/upload`、`/rag/query` 继续保留，方便对照各阶段。
-V2 旧接口只访问 `workspace_id="__global__"` 的全局 Chunk，不会读取 Workspace 文档。
+这三个全局入口在 OpenAPI 中标记为 legacy/deprecated；V4 新能力应挂在 Workspace
+Conversation 路径下。V2 旧接口只访问 `workspace_id="__global__"` 的全局 Chunk，
+不会读取 Workspace 文档。
 
 ## 轻量日志
 
@@ -124,3 +132,8 @@ V3 仍使用同步请求和单机 SQLite，不包含用户权限、流式回答�
 失败，不会尝试恢复已经删除的 Chroma Chunk 或本地文件。旧 V2 Chunk 没有
 `workspace_id`，不会被 Workspace 范围的查询命中；旧的无 `workspace_id` Chroma 数据
 也不会被新的 V2 全局检索命中，学习环境可以清空 `storage/chroma` 后重新上传。
+
+当前项目使用 Alembic 管理数据库 schema。已有旧 SQLite 如果停留在 V3 基础表结构、
+但缺少 `conversation_messages.metrics`，需要先 `alembic stamp 0001_baseline_v3_schema`
+标记基线，再 `alembic upgrade head` 应用 metrics 迁移。新数据库直接运行
+`alembic upgrade head` 即可创建完整 schema。

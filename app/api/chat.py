@@ -47,7 +47,17 @@ class ChatRequest(BaseModel):
         return message
 
 
-@router.post("", response_model=ChatResult)
+@router.post(
+    "",
+    response_model=ChatResult,
+    deprecated=True,
+    summary="Legacy V0 single-turn chat",
+    description=(
+        "Legacy V0 learning endpoint for direct single-turn chat. "
+        "For V4 and workspace-aware chat, use "
+        "`/workspaces/{workspace_id}/conversations/{conversation_id}/chat`."
+    ),
+)
 async def create_chat(request: ChatRequest) -> ChatResult:
     try:
         return await chat_service.chat(

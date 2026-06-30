@@ -5,7 +5,6 @@ from openai import AsyncOpenAI
 
 from app.core.config import settings
 
-
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 
 

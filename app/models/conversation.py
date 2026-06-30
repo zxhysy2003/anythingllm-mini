@@ -39,6 +39,10 @@ class ConversationMessage(SQLModel, table=True):
         default_factory=list,
         sa_column=Column(JSON, nullable=False),
     )
+    metrics: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False),
+    )
     provider: str | None = Field(default=None, max_length=64)
     model: str | None = Field(default=None, max_length=255)
     created_at: datetime = Field(default_factory=utc_now, index=True)
