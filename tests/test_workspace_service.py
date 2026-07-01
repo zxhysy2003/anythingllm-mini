@@ -59,6 +59,76 @@ def assert_latency_metrics(metrics) -> None:
     assert metrics.total_latency_ms >= 0
 
 
+def test_prepare_workspace_chat_context_is_reusable_without_side_effects(session):
+    rag = FakeRAGService()
+    chat = FakeChatService()
+    service = WorkspaceService(rag=rag, chat=chat)
+    workspace = service.create_workspace(
+        session,
+        name="Reusable context",
+        system_prompt="Answer from workspace material.",
+        history_limit=1,
+        top_k=4,
+        similarity_threshold=0.7,
+    )
+    conversation = service.create_conversation(session, workspace.id)
+    session.add(
+        ConversationMessage(
+            conversation_id=conversation.id,
+            role="user",
+            content="prior question",
+        )
+    )
+    session.add(
+        ConversationMessage(
+            conversation_id=conversation.id,
+            role="assistant",
+            content="prior answer",
+        )
+    )
+    session.commit()
+    rag.chunks = [make_chunk(workspace.id, text="prepared context")]
+
+    context = asyncio.run(
+        service.prepare_workspace_chat_context(
+            session,
+            workspace.id,
+            conversation.id,
+            " next question ",
+        )
+    )
+
+    assert context.workspace.id == workspace.id
+    assert context.conversation.id == conversation.id
+    assert context.message == "next question"
+    assert context.history == [
+        {"role": "user", "content": "prior question"},
+        {"role": "assistant", "content": "prior answer"},
+    ]
+    assert context.chunks == rag.chunks
+    assert [source.text for source in context.sources] == ["prepared context"]
+    assert context.has_context is True
+    assert context.retrieved_count == 1
+    assert context.dropped_count == 0
+    assert context.context_char_count == len("prepared context")
+    assert context.query_refused is False
+    assert context.retrieval_latency_ms >= 0
+    assert "prepared context" in context.system_prompt
+    assert rag.retrieve_calls == [("next question", workspace.id, 4, 0.7)]
+    assert chat.calls == []
+    assert [
+        message.content
+        for message in service.list_messages(
+            session,
+            workspace.id,
+            conversation.id,
+        )
+    ] == [
+        "prior question",
+        "prior answer",
+    ]
+
+
 def test_workspace_chat_loads_limited_history_and_auto_titles(session):
     rag = FakeRAGService()
     chat = FakeChatService()

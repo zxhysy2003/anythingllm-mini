@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import logging
 from time import perf_counter
 from typing import Any
@@ -8,6 +9,7 @@ from sqlmodel import Session, select
 
 from app.core.config import settings
 from app.core.llm import ChatMessage, DEFAULT_SYSTEM_PROMPT
+from app.core.rag import RetrievedChunk
 from app.models.conversation import (
     DEFAULT_CONVERSATION_TITLE,
     Conversation,
@@ -29,6 +31,7 @@ from app.services.exceptions import (
 )
 from app.services.rag_service import (
     NO_CONTEXT_ANSWER,
+    RAGContextBuildResult,
     RAGService,
     RAGSource,
     rag_service,
@@ -59,6 +62,29 @@ class WorkspaceChatResult(BaseModel):
     provider: str | None
     model: str | None
     metrics: WorkspaceChatMetrics
+
+
+@dataclass(frozen=True)
+class WorkspaceChatContext:
+    workspace: Workspace
+    conversation: Conversation
+    message: str
+    history: list[ChatMessage]
+    chunks: list[RetrievedChunk]
+    context_prompt: RAGContextBuildResult | None
+    sources: list[RAGSource]
+    has_context: bool
+    retrieved_count: int
+    dropped_count: int
+    context_char_count: int
+    query_refused: bool
+    retrieval_latency_ms: int
+
+    @property
+    def system_prompt(self) -> str:
+        if self.has_context and self.context_prompt is not None:
+            return self.context_prompt.system_prompt
+        return self.workspace.system_prompt
 
 
 class WorkspaceDeleteResult(BaseModel):
@@ -291,6 +317,86 @@ class WorkspaceService:
         message: str,
     ) -> WorkspaceChatResult:
         total_started_at = perf_counter()
+        context = await self.prepare_workspace_chat_context(
+            session,
+            workspace_id,
+            conversation_id,
+            message,
+        )
+        llm_called = False
+        llm_latency_ms = 0
+
+        if context.query_refused:
+            answer = NO_CONTEXT_ANSWER
+            provider = None
+            model = None
+        else:
+            llm_started_at = perf_counter()
+            chat_result = await self.chat.chat(
+                message=context.message,
+                system_prompt=context.system_prompt,
+                history=context.history,
+                temperature=context.workspace.temperature,
+            )
+            llm_latency_ms = self._elapsed_ms(llm_started_at)
+            llm_called = True
+            answer = chat_result.answer
+            provider = chat_result.provider
+            model = chat_result.model
+
+        metrics = WorkspaceChatMetrics(
+            retrieved_count=context.retrieved_count,
+            used_source_count=len(context.sources),
+            dropped_count=context.dropped_count,
+            context_char_count=context.context_char_count,
+            has_context=context.has_context,
+            query_refused=context.query_refused,
+            llm_called=llm_called,
+            retrieval_latency_ms=context.retrieval_latency_ms,
+            llm_latency_ms=llm_latency_ms,
+            total_latency_ms=self._elapsed_ms(total_started_at),
+        )
+
+        self._save_exchange(
+            session,
+            context.conversation,
+            context.message,
+            answer,
+            context.sources,
+            provider,
+            model,
+            metrics,
+        )
+        logger.info(
+            "workspace.chat.completed",
+            extra={
+                "event": "workspace.chat.completed",
+                "workspace_id": context.workspace.id,
+                "conversation_id": context.conversation.id,
+                "chat_mode": context.workspace.chat_mode,
+                "has_context": context.has_context,
+                "source_count": len(context.sources),
+                "query_refused": context.query_refused,
+                "llm_called": llm_called,
+            },
+        )
+        return WorkspaceChatResult(
+            conversation_id=context.conversation.id,
+            message=context.message,
+            answer=answer,
+            sources=context.sources,
+            provider=provider,
+            model=model,
+            metrics=metrics,
+        )
+
+    async def prepare_workspace_chat_context(
+        self,
+        session: Session,
+        workspace_id: str,
+        conversation_id: str,
+        message: str,
+    ) -> WorkspaceChatContext:
         normalized_message = self._require_text(message, "message")
         workspace = self.get_workspace(session, workspace_id)
         conversation = self._get_conversation(
@@ -300,9 +406,10 @@ class WorkspaceService:
         )
         history = self._load_history(
             session,
-            conversation_id,
+            conversation.id,
             workspace.history_limit,
         )
+
         retrieval_started_at = perf_counter()
         chunks = await self.rag.retrieve(
             normalized_message,
@@ -311,12 +418,14 @@ class WorkspaceService:
             similarity_threshold=workspace.similarity_threshold,
         )
         retrieval_latency_ms = self._elapsed_ms(retrieval_started_at)
+
         context_prompt = None
         if chunks:
             context_prompt = self.rag.build_context_prompt(
                 chunks,
                 base_prompt=workspace.system_prompt,
             )
+
         sources = [] if context_prompt is None else context_prompt.sources
         has_context = context_prompt is not None and bool(context_prompt.chunks)
         retrieved_count = (
@@ -327,74 +436,21 @@ class WorkspaceService:
             0 if context_prompt is None else context_prompt.context_char_count
         )
         query_refused = not has_context and workspace.chat_mode == "query"
-        llm_called = False
-        llm_latency_ms = 0
 
-        if query_refused:
-            answer = NO_CONTEXT_ANSWER
-            provider = None
-            model = None
-        else:
-            system_prompt = workspace.system_prompt
-            if has_context:
-                system_prompt = context_prompt.system_prompt
-            llm_started_at = perf_counter()
-            chat_result = await self.chat.chat(
-                message=normalized_message,
-                system_prompt=system_prompt,
-                history=history,
-                temperature=workspace.temperature,
-            )
-            llm_latency_ms = self._elapsed_ms(llm_started_at)
-            llm_called = True
-            answer = chat_result.answer
-            provider = chat_result.provider
-            model = chat_result.model
-
-        metrics = WorkspaceChatMetrics(
+        return WorkspaceChatContext(
+            workspace=workspace,
+            conversation=conversation,
+            message=normalized_message,
+            history=history,
+            chunks=chunks,
+            context_prompt=context_prompt,
+            sources=sources,
+            has_context=has_context,
             retrieved_count=retrieved_count,
-            used_source_count=len(sources),
             dropped_count=dropped_count,
             context_char_count=context_char_count,
-            has_context=has_context,
             query_refused=query_refused,
-            llm_called=llm_called,
             retrieval_latency_ms=retrieval_latency_ms,
-            llm_latency_ms=llm_latency_ms,
-            total_latency_ms=self._elapsed_ms(total_started_at),
-        )
-
-        self._save_exchange(
-            session,
-            conversation,
-            normalized_message,
-            answer,
-            sources,
-            provider,
-            model,
-            metrics,
-        )
-        logger.info(
-            "workspace.chat.completed",
-            extra={
-                "event": "workspace.chat.completed",
-                "workspace_id": workspace.id,
-                "conversation_id": conversation.id,
-                "chat_mode": workspace.chat_mode,
-                "has_context": has_context,
-                "source_count": len(sources),
-                "query_refused": query_refused,
-                "llm_called": llm_called,
-            },
-        )
-        return WorkspaceChatResult(
-            conversation_id=conversation.id,
-            message=normalized_message,
-            answer=answer,
-            sources=sources,
-            provider=provider,
-            model=model,
-            metrics=metrics,
         )
 
     def _get_conversation(
