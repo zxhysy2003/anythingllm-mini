@@ -253,6 +253,8 @@ decide query refusal
 
 ### Step 3：实现 Tool 与 ToolRegistry
 
+状态：已完成。
+
 先实现纯 Python 抽象，不接 LLM：
 
 ```text
