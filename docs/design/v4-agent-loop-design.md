@@ -171,6 +171,54 @@ error
 建议 V4 最小实现先用 `metrics["agent_steps"]`，避免一开始就引入迁移和额外表结构；
 如果步骤查询、失败恢复或 UI 展示需求变多，再升级为独立表。
 
+长期判断：
+
+类比 AnythingLLM，Agent 调用更适合成为独立数据实体。AnythingLLM 中有
+`workspace_agent_invocations` 表，记录一次 Agent invocation 的 `uuid`、`prompt`、
+`workspace_id`、`user_id`、`thread_id`、`closed` 等信息；Agent 触发后会先创建
+invocation，再由 WebSocket 挂接执行过程。
+
+因此 mini 的长期方向不应只依赖 assistant message 的 `metrics` JSON。更合理的演进是：
+
+```text
+agent_invocations
+- id
+- workspace_id
+- conversation_id
+- user_message_id
+- assistant_message_id
+- input_message
+- status
+- provider
+- model
+- max_steps
+- max_steps_reached
+- started_at
+- ended_at
+- error
+
+agent_steps
+- id
+- invocation_id
+- step_index
+- llm_output
+- action
+- action_input
+- observation
+- ok
+- error
+- latency_ms
+- created_at
+```
+
+取舍：
+
+- `metrics["agent_steps"]` 适合作为学习版和 summary 快照，开发快、无迁移成本。
+- 独立表适合长期产品化，便于查询、调试、重放、统计工具调用次数和失败率，也避免
+  `ConversationMessage.metrics` 越来越大。
+- V4 当前仍先使用 metrics；当进入 UI 展示、失败排查、统计分析或长任务恢复时，再升级
+  为 `agent_invocations` + `agent_steps`。
+
 为什么增加：
 
 - Agent 的价值在过程，不能只保存最终答案。
@@ -266,6 +314,8 @@ workspace_document_search
 ```
 
 ### Step 4：实现最小 Agent Loop
+
+状态：已完成。
 
 先做 ReAct 文本协议，不急着接 provider-native tool calling。
 

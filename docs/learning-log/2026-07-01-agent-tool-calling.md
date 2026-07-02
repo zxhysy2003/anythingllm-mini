@@ -120,3 +120,59 @@ from app.tools.registry import ToolContext, ToolResult
 - public API
 - direct module dependency
 - pytest collection
+
+## 2026-07-02 20:33 问题记录：ReAct 文本协议
+
+**问题：**
+
+什么是 ReAct 文本协议？结合 `anythingllm-mini` 当前 V4 Agent Loop 应该怎么理解？
+
+**回答要点：**
+
+- ReAct 可以理解成 Reason + Act 的 agent 执行模式：模型先决定下一步要不要行动，行动后拿到 observation，再继续判断，直到给出最终答案。
+- 本项目里的“文本协议”不是 HTTP 协议，也不是 provider-native tool calling，而是约定 LLM 必须输出固定文本格式。
+- 如果模型要调用工具，需要输出：
+
+```text
+Action: calculator
+Action Input: {"expression": "1 + 2"}
+```
+
+- 如果模型已经可以回答，需要输出：
+
+```text
+Final Answer: 结果是 3
+```
+
+- `build_agent_system_prompt()` 负责把可用工具、输入 schema 和输出格式要求写进 system prompt。
+- `parse_agent_output()` 负责把模型的自然语言输出解析成结构化结果：要么是 final answer，要么是 action + action input，要么是 parser error。
+- `AgentLoop` 根据解析结果调用 `ToolRegistry.run(...)`，把工具返回内容记录成 observation，再带着 observation 进入下一轮 LLM 调用。
+- 当前实现故意不要求模型输出 `Thought`，避免把模型推理过程变成稳定 API，也降低日志和测试的复杂度。
+
+**复习版理解：**
+
+在 `anythingllm-mini` 里，ReAct 文本协议是 LLM 和 Python Agent Loop 之间的一层“可解析约定”。普通 Workspace Chat 是固定流程：系统先准备上下文，再让 LLM 直接回答；而 Agent Loop 会先让 LLM 自己判断是否需要调用工具。
+
+当 LLM 输出 `Action` / `Action Input` 时，`parse_agent_output()` 会把文本转成可执行的工具调用，`ToolRegistry.run(...)` 再统一处理工具查找、输入校验和异常包装。工具执行结果不会直接成为最终答案，而是作为 observation 回到下一轮 LLM 输入中，让模型基于观察结果继续决定下一步。
+
+当 LLM 输出 `Final Answer` 时，Agent Loop 停止循环，并把后面的文本作为最终 assistant answer。这个设计的学习价值在于：先用简单文本格式理解 agent loop、tool call、observation 和 stop condition 的关系，后续再升级到 provider-native function calling 时，核心控制流不会变。
+
+**相关文件：**
+
+- `app/core/agent_loop.py`
+- `app/tools/registry.py`
+- `app/tools/calculator.py`
+- `app/tools/document_tools.py`
+- `tests/test_agent_loop.py`
+- `docs/design/v4-agent-loop-design.md`
+
+**后续可复习关键词：**
+
+- ReAct
+- Action / Action Input
+- Final Answer
+- observation
+- parser
+- ToolRegistry
+- AgentLoop
+- provider-native tool calling
