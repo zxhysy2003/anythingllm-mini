@@ -2,6 +2,7 @@ from time import perf_counter
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session
 
 from app.core.agent_loop import (
@@ -9,9 +10,20 @@ from app.core.agent_loop import (
     AgentLoop,
     AgentStep,
 )
+from app.models.conversation import (
+    DEFAULT_CONVERSATION_TITLE,
+    Conversation,
+    ConversationMessage,
+)
+from app.models.workspace import utc_now
 from app.services.chat_service import ChatService, chat_service
+from app.services.exceptions import WorkspacePersistenceError
 from app.services.rag_service import RAGSource
-from app.services.workspace_service import WorkspaceService, workspace_service
+from app.services.workspace_service import (
+    AUTO_TITLE_LENGTH,
+    WorkspaceService,
+    workspace_service,
+)
 from app.tools.registry import (
     ToolContext,
     ToolRegistry,
@@ -103,6 +115,17 @@ class AgentService:
             max_steps_reached=agent_result.max_steps_reached,
             total_latency_ms=self._elapsed_ms(started_at),
         )
+        self._save_exchange(
+            session,
+            context.conversation,
+            context.message,
+            agent_result.answer,
+            sources,
+            agent_result.provider,
+            agent_result.model,
+            metrics,
+            agent_result.steps,
+        )
         return WorkspaceAgentResult(
             conversation_id=context.conversation.id,
             message=context.message,
@@ -146,6 +169,58 @@ class AgentService:
 
     def _elapsed_ms(self, started_at: float) -> int:
         return max(0, round((perf_counter() - started_at) * 1000))
+
+    def _save_exchange(
+        self,
+        session: Session,
+        conversation: Conversation,
+        user_content: str,
+        assistant_content: str,
+        sources: list[RAGSource],
+        provider: str | None,
+        model: str | None,
+        metrics: WorkspaceAgentMetrics,
+        steps: list[AgentStep],
+    ) -> None:
+        user_message = ConversationMessage(
+            conversation_id=conversation.id,
+            role="user",
+            content=user_content,
+        )
+        assistant_message = ConversationMessage(
+            conversation_id=conversation.id,
+            role="assistant",
+            content=assistant_content,
+            sources=[source.model_dump(mode="json") for source in sources],
+            metrics=self._message_metrics(metrics, steps),
+            provider=provider,
+            model=model,
+        )
+        now = utc_now()
+        conversation.updated_at = now
+        if conversation.title == DEFAULT_CONVERSATION_TITLE:
+            conversation.title = user_content[:AUTO_TITLE_LENGTH]
+
+        session.add(user_message)
+        session.add(assistant_message)
+        session.add(conversation)
+        try:
+            session.commit()
+        except SQLAlchemyError as exc:
+            session.rollback()
+            raise WorkspacePersistenceError(
+                "failed to save agent conversation messages"
+            ) from exc
+
+    def _message_metrics(
+        self,
+        metrics: WorkspaceAgentMetrics,
+        steps: list[AgentStep],
+    ) -> dict[str, Any]:
+        data = metrics.model_dump(mode="json")
+        data["agent_mode"] = "react_text"
+        data["agent_steps"] = [step.model_dump(mode="json") for step in steps]
+        return data
 
 
 agent_service = AgentService()

@@ -12,6 +12,7 @@ from app.services.exceptions import (
     ConversationNotFoundError,
     RAGQueryError,
     WorkspaceNotFoundError,
+    WorkspacePersistenceError,
 )
 
 router = APIRouter(prefix="/workspaces", tags=["agents"])
@@ -43,5 +44,6 @@ async def run_agent_in_conversation(
         ConversationNotFoundError,
         ChatServiceError,
         RAGQueryError,
+        WorkspacePersistenceError,
     ) as exc:
         raise to_http_exception(exc) from exc

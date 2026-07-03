@@ -348,11 +348,14 @@ message，也不写入 `metrics["agent_steps"]`；持久化留给 Step 6。
 
 ### Step 6：保存最终消息和中间步骤
 
+状态：已完成。
+
 最终仍保存一条 user message 和一条 assistant message。中间步骤先放入 assistant
 message 的 metrics：
 
 ```json
 {
+  "agent_mode": "react_text",
   "agent_steps": [],
   "tool_call_count": 1,
   "max_steps_reached": false

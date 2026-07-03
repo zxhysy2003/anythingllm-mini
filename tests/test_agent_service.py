@@ -9,7 +9,11 @@ from app.core.rag import RetrievedChunk
 from app.models.conversation import ConversationMessage
 from app.services.agent_service import AgentService
 from app.services.chat_service import ChatResult
-from app.services.exceptions import ConversationNotFoundError, WorkspaceNotFoundError
+from app.services.exceptions import (
+    ConversationNotFoundError,
+    WorkspaceNotFoundError,
+    WorkspacePersistenceError,
+)
 from app.services.workspace_service import WorkspaceService
 from app.tools.calculator import CalculatorTool
 from app.tools.document_tools import WorkspaceDocumentSearchTool
@@ -116,7 +120,12 @@ def list_message_count(session) -> int:
     return len(session.exec(select(ConversationMessage)).all())
 
 
-def test_agent_service_returns_final_answer_without_tool_and_does_not_save(session):
+def list_messages(session):
+    statement = select(ConversationMessage).order_by(ConversationMessage.created_at)
+    return list(session.exec(statement).all())
+
+
+def test_agent_service_returns_final_answer_and_saves_exchange(session):
     agent_service, _, agent_chat, workspace, conversation = make_services(
         session,
         ["Final Answer: no tool needed"],
@@ -148,7 +157,21 @@ def test_agent_service_returns_final_answer_without_tool_and_does_not_save(sessi
     assert result.metrics.total_latency_ms >= 0
     assert agent_chat.calls[0]["history"] == []
     assert agent_chat.calls[0]["temperature"] == 0.2
-    assert list_message_count(session) == 0
+
+    messages = list_messages(session)
+    assert [message.role for message in messages] == ["user", "assistant"]
+    assert messages[0].content == "hello agent"
+    assert messages[0].metrics == {}
+    assert messages[1].content == "no tool needed"
+    assert messages[1].sources == []
+    assert messages[1].provider == "fake"
+    assert messages[1].model == "fake-agent-model"
+    assert messages[1].metrics["agent_mode"] == "react_text"
+    assert messages[1].metrics["agent_steps"] == []
+    assert messages[1].metrics["tool_call_count"] == 0
+    assert messages[1].metrics["max_steps_reached"] is False
+    session.refresh(conversation)
+    assert conversation.title == "hello agent"
 
 
 def test_agent_service_calls_calculator_then_returns_final_answer(session):
@@ -178,6 +201,15 @@ def test_agent_service_calls_calculator_then_returns_final_answer(session):
     assert result.metrics.step_count == 1
     assert result.metrics.tool_call_count == 1
     assert result.metrics.failed_step_count == 0
+
+    assistant_message = list_messages(session)[1]
+    assert assistant_message.metrics["agent_steps"] == [
+        result.steps[0].model_dump(mode="json")
+    ]
+    assert assistant_message.metrics["agent_steps"][0]["action"] == "calculator"
+    assert assistant_message.metrics["agent_steps"][0]["tool_result"]["data"] == {
+        "result": 7
+    }
 
 
 def test_agent_service_passes_tool_context_to_tools(session):
@@ -239,6 +271,12 @@ def test_agent_service_collects_workspace_document_search_sources(session):
     assert "parsed_path" not in result.sources[0].model_dump()
     assert result.metrics.source_count == 1
 
+    assistant_message = list_messages(session)[1]
+    assert assistant_message.sources == [
+        result.sources[0].model_dump(mode="json"),
+    ]
+    assert assistant_message.metrics["source_count"] == 1
+
 
 def test_agent_service_does_not_pre_retrieve_workspace_context(session):
     rag = FakeRAGService(chunks=[make_chunk("placeholder")])
@@ -262,6 +300,59 @@ def test_agent_service_does_not_pre_retrieve_workspace_context(session):
     assert rag.retrieve_calls == []
 
 
+def test_agent_service_persists_failed_tool_step(session):
+    agent_service, _, _, workspace, conversation = make_services(
+        session,
+        [
+            'Action: missing_tool\nAction Input: {"value": "x"}',
+            "Final Answer: I cannot use that tool.",
+        ],
+        registry=make_registry(),
+    )
+
+    result = asyncio.run(
+        agent_service.run_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "use a missing tool",
+        )
+    )
+
+    assert result.metrics.failed_step_count == 1
+    assistant_message = list_messages(session)[1]
+    persisted_step = assistant_message.metrics["agent_steps"][0]
+    assert persisted_step["ok"] is False
+    assert persisted_step["error"] == "unknown_tool"
+    assert persisted_step["tool_result"]["error"] == "unknown_tool"
+
+
+def test_agent_service_persists_invalid_tool_input_step(session):
+    agent_service, _, _, workspace, conversation = make_services(
+        session,
+        [
+            'Action: calculator\nAction Input: {"expression": ""}',
+            "Final Answer: invalid expression",
+        ],
+    )
+
+    result = asyncio.run(
+        agent_service.run_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "calculate invalid expression",
+        )
+    )
+
+    assert result.metrics.failed_step_count == 1
+    assistant_message = list_messages(session)[1]
+    persisted_step = assistant_message.metrics["agent_steps"][0]
+    assert persisted_step["ok"] is False
+    assert persisted_step["error"] == "invalid_tool_input"
+    assert persisted_step["tool_result"]["error"] == "invalid_tool_input"
+
+
 def test_agent_service_reports_max_steps_reached(session):
     agent_service, _, _, workspace, conversation = make_services(
         session,
@@ -282,6 +373,39 @@ def test_agent_service_reports_max_steps_reached(session):
     assert result.metrics.max_steps_reached is True
     assert result.metrics.llm_call_count == 1
     assert result.metrics.step_count == 1
+    assistant_message = list_messages(session)[1]
+    assert assistant_message.metrics["max_steps_reached"] is True
+
+
+def test_agent_service_rolls_back_when_saving_exchange_fails(session, monkeypatch):
+    agent_service, _, _, workspace, conversation = make_services(
+        session,
+        ["Final Answer: no tool needed"],
+        registry=make_registry(),
+    )
+    original_commit = session.commit
+
+    def broken_commit():
+        from sqlalchemy.exc import SQLAlchemyError
+
+        raise SQLAlchemyError("write failed")
+
+    monkeypatch.setattr(session, "commit", broken_commit)
+    with pytest.raises(
+        WorkspacePersistenceError,
+        match="failed to save agent conversation messages",
+    ):
+        asyncio.run(
+            agent_service.run_in_conversation(
+                session,
+                workspace.id,
+                conversation.id,
+                "hello",
+            )
+        )
+
+    monkeypatch.setattr(session, "commit", original_commit)
+    assert list_message_count(session) == 0
 
 
 def test_agent_service_raises_for_missing_workspace(session):

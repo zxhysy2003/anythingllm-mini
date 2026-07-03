@@ -124,6 +124,20 @@ def test_agent_endpoint_runs_agent_loop(agent_api):
     assert payload["metrics"]["failed_step_count"] == 0
     assert agent_chat.calls[0]["temperature"] == workspace["temperature"]
 
+    messages_response = client.get(
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}/messages"
+    )
+    assert messages_response.status_code == 200
+    messages = messages_response.json()
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[0]["content"] == "calculate"
+    assert messages[1]["content"] == "the result is 7"
+    assert messages[1]["provider"] == "fake"
+    assert messages[1]["model"] == "fake-agent-model"
+    assert messages[1]["metrics"]["agent_mode"] == "react_text"
+    assert messages[1]["metrics"]["agent_steps"][0] == payload["steps"][0]
+    assert messages[1]["metrics"]["tool_call_count"] == 1
+
 
 @pytest.mark.parametrize("max_steps", [0, 11])
 def test_agent_endpoint_validates_max_steps(agent_api, max_steps):
@@ -189,6 +203,12 @@ def test_agent_endpoint_returns_tool_failure_as_step(agent_api):
     assert payload["steps"][0]["error"] == "unknown_tool"
     assert payload["steps"][0]["tool_result"]["error"] == "unknown_tool"
     assert payload["metrics"]["failed_step_count"] == 1
+
+    messages = client.get(
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}/messages"
+    ).json()
+    assert messages[1]["metrics"]["agent_steps"][0]["ok"] is False
+    assert messages[1]["metrics"]["agent_steps"][0]["error"] == "unknown_tool"
 
 
 def test_workspace_chat_endpoint_still_behaves_normally(agent_api):
