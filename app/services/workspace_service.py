@@ -65,6 +65,14 @@ class WorkspaceChatResult(BaseModel):
 
 
 @dataclass(frozen=True)
+class WorkspaceConversationContext:
+    workspace: Workspace
+    conversation: Conversation
+    message: str
+    history: list[ChatMessage]
+
+
+@dataclass(frozen=True)
 class WorkspaceChatContext:
     workspace: Workspace
     conversation: Conversation
@@ -397,6 +405,63 @@ class WorkspaceService:
         conversation_id: str,
         message: str,
     ) -> WorkspaceChatContext:
+        base_context = self.prepare_workspace_conversation_context(
+            session,
+            workspace_id,
+            conversation_id,
+            message,
+        )
+
+        retrieval_started_at = perf_counter()
+        chunks = await self.rag.retrieve(
+            base_context.message,
+            workspace_id=base_context.workspace.id,
+            top_k=base_context.workspace.top_k,
+            similarity_threshold=base_context.workspace.similarity_threshold,
+        )
+        retrieval_latency_ms = self._elapsed_ms(retrieval_started_at)
+
+        context_prompt = None
+        if chunks:
+            context_prompt = self.rag.build_context_prompt(
+                chunks,
+                base_prompt=base_context.workspace.system_prompt,
+            )
+
+        sources = [] if context_prompt is None else context_prompt.sources
+        has_context = context_prompt is not None and bool(context_prompt.chunks)
+        retrieved_count = (
+            len(chunks) if context_prompt is None else context_prompt.retrieved_count
+        )
+        dropped_count = 0 if context_prompt is None else context_prompt.dropped_count
+        context_char_count = (
+            0 if context_prompt is None else context_prompt.context_char_count
+        )
+        query_refused = not has_context and base_context.workspace.chat_mode == "query"
+
+        return WorkspaceChatContext(
+            workspace=base_context.workspace,
+            conversation=base_context.conversation,
+            message=base_context.message,
+            history=base_context.history,
+            chunks=chunks,
+            context_prompt=context_prompt,
+            sources=sources,
+            has_context=has_context,
+            retrieved_count=retrieved_count,
+            dropped_count=dropped_count,
+            context_char_count=context_char_count,
+            query_refused=query_refused,
+            retrieval_latency_ms=retrieval_latency_ms,
+        )
+
+    def prepare_workspace_conversation_context(
+        self,
+        session: Session,
+        workspace_id: str,
+        conversation_id: str,
+        message: str,
+    ) -> WorkspaceConversationContext:
         normalized_message = self._require_text(message, "message")
         workspace = self.get_workspace(session, workspace_id)
         conversation = self._get_conversation(
@@ -410,47 +475,11 @@ class WorkspaceService:
             workspace.history_limit,
         )
 
-        retrieval_started_at = perf_counter()
-        chunks = await self.rag.retrieve(
-            normalized_message,
-            workspace_id=workspace.id,
-            top_k=workspace.top_k,
-            similarity_threshold=workspace.similarity_threshold,
-        )
-        retrieval_latency_ms = self._elapsed_ms(retrieval_started_at)
-
-        context_prompt = None
-        if chunks:
-            context_prompt = self.rag.build_context_prompt(
-                chunks,
-                base_prompt=workspace.system_prompt,
-            )
-
-        sources = [] if context_prompt is None else context_prompt.sources
-        has_context = context_prompt is not None and bool(context_prompt.chunks)
-        retrieved_count = (
-            len(chunks) if context_prompt is None else context_prompt.retrieved_count
-        )
-        dropped_count = 0 if context_prompt is None else context_prompt.dropped_count
-        context_char_count = (
-            0 if context_prompt is None else context_prompt.context_char_count
-        )
-        query_refused = not has_context and workspace.chat_mode == "query"
-
-        return WorkspaceChatContext(
+        return WorkspaceConversationContext(
             workspace=workspace,
             conversation=conversation,
             message=normalized_message,
             history=history,
-            chunks=chunks,
-            context_prompt=context_prompt,
-            sources=sources,
-            has_context=has_context,
-            retrieved_count=retrieved_count,
-            dropped_count=dropped_count,
-            context_char_count=context_char_count,
-            query_refused=query_refused,
-            retrieval_latency_ms=retrieval_latency_ms,
         )
 
     def _get_conversation(

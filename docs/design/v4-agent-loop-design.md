@@ -334,18 +334,17 @@ Final Answer: ...
 
 ### Step 5：接入 AgentService 和 API
 
-新增：
+状态：已完成。
+
+已接入 `AgentService` 和 Workspace Conversation 下的 Agent API：
 
 ```text
-app/core/agent_loop.py
-app/services/agent_service.py
-app/api/agents.py
-app/tools/registry.py
-app/tools/calculator.py
-app/tools/document_tools.py
+POST /workspaces/{workspace_id}/conversations/{conversation_id}/agent
 ```
 
-并在 `app/main.py` 注册 agent router。
+本阶段只负责把 Step 4 的 `AgentLoop` 暴露到 workspace conversation 边界中，返回
+answer、steps、sources、provider、model 和 metrics。Step 5 暂不保存 user/assistant
+message，也不写入 `metrics["agent_steps"]`；持久化留给 Step 6。
 
 ### Step 6：保存最终消息和中间步骤
 

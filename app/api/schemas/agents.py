@@ -1,0 +1,66 @@
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.core.agent_loop import DEFAULT_AGENT_STEPS, MAX_AGENT_STEPS
+from app.services.rag_service import RAGSource
+
+
+class WorkspaceAgentRequest(BaseModel):
+    message: str = Field(min_length=1)
+    max_steps: int = Field(default=DEFAULT_AGENT_STEPS, ge=1, le=MAX_AGENT_STEPS)
+
+    @field_validator("message")
+    @classmethod
+    def strip_message(cls, value: str) -> str:
+        message = value.strip()
+        if not message:
+            raise ValueError("message cannot be empty")
+        return message
+
+
+class AgentToolResultRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    ok: bool
+    content: str
+    data: dict[str, Any]
+    error: str | None
+
+
+class AgentStepRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    step_index: int
+    llm_output: str
+    action: str | None
+    action_input: dict[str, Any]
+    observation: str | None
+    ok: bool
+    error: str | None
+    tool_result: AgentToolResultRead | None
+
+
+class WorkspaceAgentMetricsRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    llm_call_count: int
+    step_count: int
+    tool_call_count: int
+    failed_step_count: int
+    source_count: int
+    max_steps_reached: bool
+    total_latency_ms: int
+
+
+class WorkspaceAgentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    conversation_id: str
+    message: str
+    answer: str
+    steps: list[AgentStepRead]
+    sources: list[RAGSource]
+    provider: str | None
+    model: str | None
+    metrics: WorkspaceAgentMetricsRead

@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.agents import router as agents_router
 from app.api.chat import router as chat_router
 from app.api.documents import router as documents_router
 from app.api.rag import router as rag_router
@@ -20,6 +21,7 @@ app.include_router(chat_router)
 app.include_router(documents_router)
 app.include_router(rag_router)
 app.include_router(workspaces_router)
+app.include_router(agents_router)
 
 
 @app.get("/")
