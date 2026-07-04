@@ -294,5 +294,8 @@ def test_workspace_openapi_routes_are_registered():
         "/workspaces/{workspace_id}/conversations/{conversation_id}/chat"
     ]["post"]
     assert chat.get("deprecated") is not True
+    assert "V3" in chat["summary"]
+    assert "workspace-aware chat" in chat["description"]
     upload = schema["paths"]["/workspaces/{workspace_id}/documents/upload"]["post"]
+    assert "V3" in upload["summary"]
     assert "multipart/form-data" in upload["requestBody"]["content"]
