@@ -23,4 +23,4 @@ class WorkspaceDocumentNotFoundError(LookupError):
 
 
 class WorkspacePersistenceError(RuntimeError):
-    """Raised when V3 metadata or messages cannot be persisted."""
+    """Raised when workspace metadata or messages cannot be persisted."""

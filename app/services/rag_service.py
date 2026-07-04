@@ -4,9 +4,8 @@ from pydantic import BaseModel
 
 from app.core.config import settings
 from app.core.embeddings import SentenceTransformerEmbeddings, embedding_service
-from app.core.rag import GLOBAL_WORKSPACE_ID, RetrievedChunk, TextChunker
+from app.core.rag import RetrievedChunk, TextChunker
 from app.core.vectorstore import ChromaVectorStore, vector_store
-from app.services.chat_service import ChatService, chat_service
 from app.services.document_service import ParsedDocumentFile
 from app.services.exceptions import RAGIndexError, RAGQueryError
 
@@ -27,12 +26,6 @@ class RAGSource(BaseModel):
     score: float
 
 
-class RAGQueryResult(BaseModel):
-    question: str
-    answer: str
-    sources: list[RAGSource]
-
-
 class RAGContextBuildResult(BaseModel):
     system_prompt: str
     chunks: list[RetrievedChunk]
@@ -48,20 +41,17 @@ class RAGService:
         chunker: TextChunker | None = None,
         embeddings: SentenceTransformerEmbeddings | None = None,
         store: ChromaVectorStore | None = None,
-        chat: ChatService | None = None,
     ):
         self.chunker = chunker or TextChunker()
         self.embeddings = embeddings or embedding_service
         self.store = store or vector_store
-        self.chat = chat or chat_service
 
     async def index_document(
         self,
         parsed_file: ParsedDocumentFile,
-        workspace_id: str | None = None,
+        workspace_id: str,
     ) -> IndexedDocument:
-        scope = workspace_id or GLOBAL_WORKSPACE_ID
-        chunks = self.chunker.chunk_document(parsed_file, workspace_id=scope)
+        chunks = self.chunker.chunk_document(parsed_file, workspace_id=workspace_id)
 
         try:
             embeddings = await self.embeddings.embed_documents(
@@ -81,44 +71,22 @@ class RAGService:
     async def delete_document(
         self,
         document_id: str,
-        workspace_id: str | None = None,
+        workspace_id: str,
     ) -> int:
-        scope = workspace_id or GLOBAL_WORKSPACE_ID
         try:
-            return await self.store.delete_document(document_id, workspace_id=scope)
+            return await self.store.delete_document(
+                document_id,
+                workspace_id=workspace_id,
+            )
         except Exception as exc:
             raise RAGIndexError(
                 f"failed to delete indexed document: {document_id}"
             ) from exc
 
-    async def query(self, question: str) -> RAGQueryResult:
-        normalized_question = question.strip()
-        if not normalized_question:
-            raise ValueError("question cannot be empty")
-
-        retrieved_chunks = await self.retrieve(normalized_question)
-        if not retrieved_chunks:
-            return self._no_context_result(normalized_question)
-
-        context_prompt = self.build_context_prompt(retrieved_chunks)
-        if not context_prompt.chunks:
-            return self._no_context_result(normalized_question)
-
-        chat_result = await self.chat.chat(
-            message=normalized_question,
-            system_prompt=context_prompt.system_prompt,
-            temperature=0,
-        )
-        return RAGQueryResult(
-            question=normalized_question,
-            answer=chat_result.answer,
-            sources=context_prompt.sources,
-        )
-
     async def retrieve(
         self,
         question: str,
-        workspace_id: str | None = None,
+        workspace_id: str,
         top_k: int | None = None,
         similarity_threshold: float | None = None,
     ) -> list[RetrievedChunk]:
@@ -127,7 +95,9 @@ class RAGService:
             raise ValueError("question cannot be empty")
 
         try:
-            scope = workspace_id or GLOBAL_WORKSPACE_ID
+            scope = workspace_id.strip()
+            if not scope:
+                raise ValueError("workspace_id cannot be empty")
             has_documents = await self.store.has_documents(workspace_id=scope)
             if not has_documents:
                 logger.info(
@@ -167,7 +137,7 @@ class RAGService:
                 "rag.retrieve.failed",
                 extra={
                     "event": "rag.retrieve.failed",
-                    "workspace_id": workspace_id or GLOBAL_WORKSPACE_ID,
+                    "workspace_id": workspace_id,
                 },
             )
             raise RAGQueryError("failed to retrieve document context") from exc
@@ -239,13 +209,6 @@ class RAGService:
             f"Chunk: {chunk.chunk_index}\n"
             f"{chunk.text}\n"
             f"[END SOURCE {index}]"
-        )
-
-    def _no_context_result(self, question: str) -> RAGQueryResult:
-        return RAGQueryResult(
-            question=question,
-            answer=NO_CONTEXT_ANSWER,
-            sources=[],
         )
 
     def to_source(self, chunk: RetrievedChunk) -> RAGSource:

@@ -1,15 +1,7 @@
-# V4 Agent Loop 与工具系统
+# 最终版 Agent Loop 与工具系统
 
-V4 的目标是在 V0-V3 的基础上补一个最小、可解释、可测试的 Agent 闭环。
-
-V0-V3 已经有：
-
-- V0：LLM 接口调用。
-- V1：文档上传和解析。
-- V2：文档分块、向量化和 RAG 检索。
-- V3：Workspace、Conversation、聊天历史和 workspace-scoped RAG。
-
-V4 在这些能力之上增加：
+当前最终版在 Workspace 和 Conversation 边界内运行一个最小、可解释、可测试的
+Agent 闭环：
 
 ```text
 用户消息
@@ -51,7 +43,7 @@ app/api/schemas/agents.py       -> Agent request/response schema
 
 ## ReAct Text Protocol
 
-V4 使用文本版 ReAct 协议，不依赖 provider-native tool calling。
+当前实现使用文本版 ReAct 协议，不依赖 provider-native tool calling。
 
 模型每一轮只能输出两种格式之一：
 
@@ -80,7 +72,7 @@ Final Answer: 结果是 3
 
 ## Tool System
 
-V4 定义了统一工具接口：
+最终版定义了统一工具接口：
 
 ```text
 ToolContext
@@ -141,7 +133,7 @@ BaseTool
 
 ## Workspace Document Search Tool
 
-`workspace_document_search` 把 V2/V3 已有的 RAG 检索包装成工具。
+`workspace_document_search` 把 workspace-scoped RAG 检索包装成工具。
 
 关键边界：
 
@@ -161,14 +153,14 @@ AgentService
 -> RAGService.retrieve(..., workspace_id=context.workspace_id)
 ```
 
-这让 V4 的 Agentic RAG 和 V3 的固定 RAG Chat 有了清楚区别：
+这让 Agentic RAG 和固定 RAG Chat 有了清楚区别：
 
-- V3 Chat：系统固定先检索，再决定是否调用 LLM。
-- V4 Agent：模型可以先回答，也可以主动调用文档搜索工具，再根据 observation 回答。
+- Workspace Chat：系统固定先检索，再决定是否调用 LLM。
+- Workspace Agent：模型可以先回答，也可以主动调用文档搜索工具，再根据 observation 回答。
 
 ## AgentService
 
-`AgentService.run_in_conversation()` 是 V4 的 Workspace 边界。
+`AgentService.run_in_conversation()` 是 Agent 的 Workspace 边界。
 
 它负责：
 
@@ -186,7 +178,7 @@ AgentService
 
 ## Persistence
 
-V4 最终仍只保存两条 ConversationMessage：
+Agent 调用最终仍只保存两条 ConversationMessage：
 
 ```text
 user message
@@ -285,7 +277,7 @@ GET /workspaces/{workspace_id}/conversations/{conversation_id}/messages
 
 ## Error Boundaries
 
-V4 的失败边界分层处理：
+Agent 的失败边界分层处理：
 
 - message 为空：请求校验或 AgentLoop 校验失败。
 - `max_steps` 不在 `1..10`：请求校验或 AgentLoop 校验失败。
@@ -302,7 +294,7 @@ V4 的失败边界分层处理：
 
 ## Tests
 
-V4 测试覆盖：
+测试覆盖：
 
 - `tests/test_tools_registry.py`：工具注册、查找、列表、未知工具、输入校验和异常包装。
 - `tests/test_calculator_tool.py`：安全计算器的支持表达式、拒绝危险表达式、除零和大数边界。
@@ -324,9 +316,9 @@ conda run -n anythingllm-mini black --check app tests
 git diff --check
 ```
 
-## V4 Boundary
+## Boundary
 
-V4 只实现同步、最小、可测试的 Agent 闭环。
+当前只实现同步、最小、可测试的 Agent 闭环。
 
 暂不实现：
 

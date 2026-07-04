@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 
 from app.core.config import PROJECT_ROOT, settings
-from app.core.rag import GLOBAL_WORKSPACE_ID, DocumentChunk, RetrievedChunk
+from app.core.rag import DocumentChunk, RetrievedChunk
 
 if TYPE_CHECKING:
     from chromadb.api import ClientAPI
@@ -60,9 +60,9 @@ class ChromaVectorStore:
     async def query(
         self,
         query_embedding: Sequence[float],
+        workspace_id: str,
         top_k: int | None = None,
         similarity_threshold: float | None = None,
-        workspace_id: str | None = None,
     ) -> list[RetrievedChunk]:
         vector = list(query_embedding)
         if not vector:
@@ -89,10 +89,10 @@ class ChromaVectorStore:
             scope,
         )
 
-    async def has_documents(self, workspace_id: str | None = None) -> bool:
+    async def has_documents(self, workspace_id: str) -> bool:
         return await self.count(workspace_id=workspace_id) > 0
 
-    async def count(self, workspace_id: str | None = None) -> int:
+    async def count(self, workspace_id: str) -> int:
         scope = self._normalize_workspace_id(workspace_id)
         return await asyncio.to_thread(self._count, scope)
 
@@ -123,7 +123,7 @@ class ChromaVectorStore:
     async def delete_document(
         self,
         document_id: str,
-        workspace_id: str | None = None,
+        workspace_id: str,
     ) -> int:
         normalized_document_id = document_id.strip()
         if not normalized_document_id:
@@ -358,8 +358,11 @@ class ChromaVectorStore:
             "character_count": chunk.character_count,
         }
 
-    def _normalize_workspace_id(self, workspace_id: str | None) -> str:
-        return workspace_id or GLOBAL_WORKSPACE_ID
+    def _normalize_workspace_id(self, workspace_id: str) -> str:
+        normalized = workspace_id.strip()
+        if not normalized:
+            raise ValueError("workspace_id cannot be empty")
+        return normalized
 
     def _document_where(self, document_id: str, workspace_id: str) -> dict[str, Any]:
         return {

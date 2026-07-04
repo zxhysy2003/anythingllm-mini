@@ -5,6 +5,8 @@ import pytest
 from app.core.rag import TextChunker
 from app.services.document_service import ParsedDocumentFile
 
+WORKSPACE_ID = "1" * 32
+
 
 def parsed_document(text: str) -> ParsedDocumentFile:
     return ParsedDocumentFile(
@@ -41,10 +43,14 @@ def test_chunker_splits_long_text_with_overlap():
 def test_chunker_builds_deterministic_chunk_metadata():
     document = parsed_document("ABCDEFGHIJKLMNO")
 
-    chunks = TextChunker(chunk_size=10, chunk_overlap=2).chunk_document(document)
+    chunks = TextChunker(chunk_size=10, chunk_overlap=2).chunk_document(
+        document,
+        workspace_id=WORKSPACE_ID,
+    )
 
     assert [chunk.id for chunk in chunks] == [f"{document.id}:0", f"{document.id}:1"]
     assert chunks[0].document_id == document.id
+    assert chunks[0].workspace_id == WORKSPACE_ID
     assert chunks[0].original_filename == "guide.txt"
     assert chunks[0].chunk_index == 0
     assert chunks[0].character_count == len(chunks[0].text)

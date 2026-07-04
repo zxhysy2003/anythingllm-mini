@@ -1,7 +1,6 @@
 import asyncio
 from pathlib import Path
 
-from app.core.rag import GLOBAL_WORKSPACE_ID
 from app.core.vectorstore import VectorDocumentKey
 from app.models.document import WorkspaceDocument
 from app.models.workspace import Workspace
@@ -19,7 +18,7 @@ class FakeVectorStore:
             return list(self.keys)
         return [key for key in self.keys if key.workspace_id == workspace_id]
 
-    async def delete_document(self, document_id, workspace_id=None):
+    async def delete_document(self, document_id, workspace_id):
         deleted_count = 0
         remaining = []
         for key in self.keys:
@@ -263,30 +262,6 @@ def test_document_consistency_repair_deletes_orphan_storage_and_vectors(
         f"deleted_orphan_parsed_dir:{orphan_parsed_id}",
         f"deleted_orphan_vectors:{workspace_id}:{orphan_vector_id}:4",
     ]
-
-
-def test_document_consistency_preserves_global_v2_documents(
-    session,
-    tmp_path,
-):
-    documents = DocumentService(
-        upload_dir=tmp_path / "uploads",
-        parsed_dir=tmp_path / "parsed",
-    )
-    document_id = "a" * 32
-    upload_path, parsed_path = create_document_files(documents, document_id)
-    store = FakeVectorStore(
-        [vector_key(GLOBAL_WORKSPACE_ID, document_id, chunk_count=2)]
-    )
-    service = DocumentConsistencyService(documents=documents, store=store)
-
-    report = reconcile(service, session, repair=True)
-
-    assert report.issues == []
-    assert report.repaired_actions == []
-    assert upload_path.exists()
-    assert parsed_path.exists()
-    assert store.deleted_documents == []
 
 
 def test_document_consistency_never_repairs_unsafe_paths(

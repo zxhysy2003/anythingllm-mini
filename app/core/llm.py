@@ -14,7 +14,7 @@ class ChatMessage(TypedDict):
 
 
 class DeepSeekLLM:
-    """Small DeepSeek-only wrapper for the V0 chat flow."""
+    """Small DeepSeek-only wrapper used by chat and agent flows."""
 
     def __init__(self, model_name: str | None = None, temperature: float = 0.7):
         self.client = AsyncOpenAI(**settings.deepseek_client_options())

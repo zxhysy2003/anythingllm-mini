@@ -233,13 +233,13 @@ def test_workspace_chat_endpoint_still_behaves_normally(agent_api):
     ]
 
 
-def test_agent_openapi_route_documents_v4_stage():
+def test_agent_openapi_route_documents_agent_endpoint():
     app.openapi_schema = None
     schema = app.openapi()
 
     operation = schema["paths"][
         "/workspaces/{workspace_id}/conversations/{conversation_id}/agent"
     ]["post"]
-    assert "V4" in operation["summary"]
+    assert operation["summary"] == "Workspace agent loop"
     assert "minimal ReAct text agent loop" in operation["description"]
     assert "assistant message metrics" in operation["description"]

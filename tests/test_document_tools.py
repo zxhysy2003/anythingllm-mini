@@ -52,7 +52,7 @@ def test_document_search_requires_workspace_context():
 
 def test_document_search_uses_context_workspace_and_query_options():
     workspace_id = "w" * 32
-    chunk = make_chunk(workspace_id, text="The document explains V4 tools.")
+    chunk = make_chunk(workspace_id, text="The document explains agent tools.")
     rag = FakeRAGService(chunks=[chunk])
     tool = WorkspaceDocumentSearchTool(rag=rag)
 
@@ -73,7 +73,7 @@ def test_document_search_uses_context_workspace_and_query_options():
             "document_id": "a" * 32,
             "original_filename": "guide.txt",
             "chunk_index": 0,
-            "text": "The document explains V4 tools.",
+            "text": "The document explains agent tools.",
             "score": 0.95,
         }
     ]

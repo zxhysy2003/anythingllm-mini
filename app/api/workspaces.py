@@ -43,10 +43,10 @@ SessionDependency = Annotated[Session, Depends(get_session)]
     "",
     response_model=WorkspaceRead,
     status_code=status.HTTP_201_CREATED,
-    summary="V3 create workspace",
+    summary="Create workspace",
     description=(
-        "V3 workspace endpoint that creates the main boundary for scoped "
-        "documents, conversation history, chat settings, and V4 agent runs."
+        "Create the workspace boundary for scoped documents, conversation "
+        "history, chat settings, and agent runs."
     ),
 )
 def create_workspace(
@@ -65,11 +65,10 @@ def create_workspace(
 @router.get(
     "",
     response_model=list[WorkspaceRead],
-    summary="V3 list workspaces",
+    summary="List workspaces",
     description=(
-        "V3 workspace endpoint that lists available workspace records. "
-        "Each workspace owns its documents, conversations, chat settings, "
-        "and later V4 agent context."
+        "List available workspace records. Each workspace owns its documents, "
+        "conversations, chat settings, and agent context."
     ),
 )
 def list_workspaces(session: SessionDependency) -> list[WorkspaceRead]:
@@ -79,10 +78,10 @@ def list_workspaces(session: SessionDependency) -> list[WorkspaceRead]:
 @router.get(
     "/{workspace_id}",
     response_model=WorkspaceRead,
-    summary="V3 get workspace",
+    summary="Get workspace",
     description=(
-        "V3 workspace endpoint that reads one workspace by id, including "
-        "prompt, temperature, history, chat mode, and retrieval settings."
+        "Read one workspace by id, including prompt, temperature, history, "
+        "chat mode, and retrieval settings."
     ),
 )
 def get_workspace(workspace_id: str, session: SessionDependency) -> WorkspaceRead:
@@ -95,11 +94,10 @@ def get_workspace(workspace_id: str, session: SessionDependency) -> WorkspaceRea
 @router.patch(
     "/{workspace_id}",
     response_model=WorkspaceRead,
-    summary="V3 update workspace settings",
+    summary="Update workspace settings",
     description=(
-        "V3 workspace endpoint that updates workspace chat and retrieval "
-        "settings such as system prompt, temperature, history limit, chat "
-        "mode, top_k, and similarity threshold."
+        "Update workspace chat and retrieval settings such as system prompt, "
+        "temperature, history limit, chat mode, top_k, and similarity threshold."
     ),
 )
 def update_workspace(
@@ -120,11 +118,11 @@ def update_workspace(
 @router.delete(
     "/{workspace_id}",
     response_model=WorkspaceDeleteResponse,
-    summary="V3.5 delete workspace",
+    summary="Delete workspace",
     description=(
-        "V3.5 workspace maintenance endpoint that hard-deletes a workspace "
-        "and its scoped documents, conversations, messages, files, and vector "
-        "chunks. It returns deletion counts instead of local file paths."
+        "Hard-delete a workspace and its scoped documents, conversations, "
+        "messages, files, and vector chunks. It returns deletion counts instead "
+        "of local file paths."
     ),
 )
 async def delete_workspace(
@@ -145,11 +143,10 @@ async def delete_workspace(
     "/{workspace_id}/documents/upload",
     response_model=WorkspaceDocumentRead,
     status_code=status.HTTP_201_CREATED,
-    summary="V3 upload workspace document",
+    summary="Upload workspace document",
     description=(
-        "V3 workspace document endpoint that uploads, parses, chunks, embeds, "
-        "and indexes a TXT, PDF, or DOCX file into the current workspace "
-        "scope. Prefer this over the legacy global `/documents/upload` path."
+        "Upload, parse, chunk, embed, and index a TXT, PDF, or DOCX file into "
+        "the current workspace scope."
     ),
 )
 async def upload_workspace_document(
@@ -178,11 +175,10 @@ async def upload_workspace_document(
 @router.get(
     "/{workspace_id}/documents",
     response_model=list[WorkspaceDocumentRead],
-    summary="V3 list workspace documents",
+    summary="List workspace documents",
     description=(
-        "V3 workspace document endpoint that lists documents registered in "
-        "one workspace. Responses expose document metadata but not local "
-        "upload_path or parsed_path values."
+        "List documents registered in one workspace. Responses expose document "
+        "metadata but not local upload_path or parsed_path values."
     ),
 )
 def list_workspace_documents(
@@ -198,11 +194,11 @@ def list_workspace_documents(
 @router.delete(
     "/{workspace_id}/documents/{document_id}",
     response_model=WorkspaceDocumentDeleteResponse,
-    summary="V3 delete workspace document",
+    summary="Delete workspace document",
     description=(
-        "V3 workspace document endpoint that removes one document from the "
-        "current workspace, including its vector chunks and local upload/"
-        "parsed files. The document must belong to the workspace path scope."
+        "Remove one document from the current workspace, including its vector "
+        "chunks and local upload/parsed files. The document must belong to the "
+        "workspace path scope."
     ),
 )
 async def delete_workspace_document(
@@ -229,11 +225,10 @@ async def delete_workspace_document(
     "/{workspace_id}/conversations",
     response_model=ConversationRead,
     status_code=status.HTTP_201_CREATED,
-    summary="V3 create workspace conversation",
+    summary="Create workspace conversation",
     description=(
-        "V3 conversation endpoint that creates an empty conversation inside "
-        "a workspace. Workspace chat and V4 agent calls both run inside this "
-        "conversation boundary."
+        "Create an empty conversation inside a workspace. Workspace chat and "
+        "agent calls both run inside this conversation boundary."
     ),
 )
 def create_conversation(
@@ -249,10 +244,10 @@ def create_conversation(
 @router.get(
     "/{workspace_id}/conversations",
     response_model=list[ConversationRead],
-    summary="V3 list workspace conversations",
+    summary="List workspace conversations",
     description=(
-        "V3 conversation endpoint that lists conversations for one workspace, "
-        "ordered by latest activity so clients can show recent threads first."
+        "List conversations for one workspace, ordered by latest activity so "
+        "clients can show recent threads first."
     ),
 )
 def list_conversations(
@@ -268,11 +263,11 @@ def list_conversations(
 @router.get(
     "/{workspace_id}/conversations/{conversation_id}/messages",
     response_model=list[ConversationMessageRead],
-    summary="V3 list conversation messages",
+    summary="List conversation messages",
     description=(
-        "V3 conversation endpoint that reads saved user and assistant messages "
-        "for one workspace conversation. In V4, agent steps are visible on the "
-        "assistant message metrics rather than as separate tool messages."
+        "Read saved user and assistant messages for one workspace conversation. "
+        "Agent steps are visible on the assistant message metrics rather than "
+        "as separate tool messages."
     ),
 )
 def list_conversation_messages(
@@ -293,12 +288,11 @@ def list_conversation_messages(
 @router.post(
     "/{workspace_id}/conversations/{conversation_id}/chat",
     response_model=WorkspaceChatResult,
-    summary="V3 workspace conversation chat",
+    summary="Workspace conversation chat",
     description=(
-        "V3 workspace-aware chat endpoint. It loads conversation history, "
-        "retrieves workspace-scoped document context when available, applies "
-        "chat/query mode, calls the LLM when appropriate, and saves the final "
-        "user and assistant messages."
+        "Load conversation history, retrieve workspace-scoped document context "
+        "when available, apply chat/query mode, call the LLM when appropriate, "
+        "and save the final user and assistant messages."
     ),
 )
 async def chat_in_conversation(

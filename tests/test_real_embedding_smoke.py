@@ -18,6 +18,7 @@ pytestmark = [
 
 
 def test_real_multilingual_embedding_retrieves_relevant_chinese_chunk(tmp_path):
+    workspace_id = "1" * 32
     texts = [
         (
             "FastAPI 可以使用 UploadFile 接收 multipart/form-data 上传的文件，"
@@ -50,6 +51,7 @@ def test_real_multilingual_embedding_retrieves_relevant_chinese_chunk(tmp_path):
         DocumentChunk(
             id=f"{document_id}:{index}",
             document_id=document_id,
+            workspace_id=workspace_id,
             original_filename="smoke.txt",
             stored_filename="smoke.txt",
             extension=".txt",
@@ -69,13 +71,14 @@ def test_real_multilingual_embedding_retrieves_relevant_chinese_chunk(tmp_path):
     results = asyncio.run(
         store.query(
             query_vector,
+            workspace_id=workspace_id,
             top_k=len(chunks),
             similarity_threshold=0.0,
         )
     )
 
     assert chunk_count == len(chunks)
-    assert asyncio.run(store.count()) == len(chunks)
+    assert asyncio.run(store.count(workspace_id=workspace_id)) == len(chunks)
     assert results
     assert results[0].id == f"{document_id}:0"
     assert "UploadFile" in results[0].text

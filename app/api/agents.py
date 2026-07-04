@@ -22,13 +22,13 @@ SessionDependency = Annotated[Session, Depends(get_session)]
 @router.post(
     "/{workspace_id}/conversations/{conversation_id}/agent",
     response_model=WorkspaceAgentResponse,
-    summary="V4 workspace agent loop",
+    summary="Workspace agent loop",
     description=(
-        "V4 workspace-aware agent endpoint. It runs the minimal ReAct text "
-        "agent loop inside one workspace conversation, can call registered "
-        "tools such as calculator and workspace_document_search, saves the "
-        "final user/assistant messages, and stores intermediate agent steps "
-        "in the assistant message metrics."
+        "Run the minimal ReAct text agent loop inside one workspace "
+        "conversation. The agent can call registered tools such as calculator "
+        "and workspace_document_search, saves the final user/assistant "
+        "messages, and stores intermediate agent steps in the assistant "
+        "message metrics."
     ),
 )
 async def run_agent_in_conversation(

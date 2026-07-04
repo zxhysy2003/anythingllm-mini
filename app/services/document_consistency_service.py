@@ -8,7 +8,6 @@ from typing import Literal
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from app.core.rag import GLOBAL_WORKSPACE_ID
 from app.core.vectorstore import ChromaVectorStore, VectorDocumentKey, vector_store
 from app.models.document import WorkspaceDocument
 from app.services.document_service import DocumentService, document_service
@@ -60,12 +59,6 @@ class DocumentConsistencyService:
         db_document_ids = {document.id for document in db_documents}
         vector_keys = await self.store.list_document_keys()
         vector_counts = self._vector_counts(vector_keys)
-        global_vector_document_ids = {
-            key.document_id
-            for key in vector_keys
-            if key.workspace_id == GLOBAL_WORKSPACE_ID
-        }
-        known_storage_document_ids = db_document_ids | global_vector_document_ids
         upload_document_ids = self._scan_document_dirs(self.documents.upload_dir)
         parsed_document_ids = self._scan_document_dirs(self.documents.parsed_dir)
 
@@ -83,7 +76,7 @@ class DocumentConsistencyService:
             storage_label="upload",
             storage_dir=self.documents.upload_dir,
             document_ids=upload_document_ids,
-            known_document_ids=known_storage_document_ids,
+            known_document_ids=db_document_ids,
             repair=repair,
             issues=issues,
             repaired_actions=repaired_actions,
@@ -92,7 +85,7 @@ class DocumentConsistencyService:
             storage_label="parsed",
             storage_dir=self.documents.parsed_dir,
             document_ids=parsed_document_ids,
-            known_document_ids=known_storage_document_ids,
+            known_document_ids=db_document_ids,
             repair=repair,
             issues=issues,
             repaired_actions=repaired_actions,
@@ -239,8 +232,6 @@ class DocumentConsistencyService:
         repaired_actions: list[str],
     ) -> None:
         for key in vector_keys:
-            if key.workspace_id == GLOBAL_WORKSPACE_ID:
-                continue
             if (key.workspace_id, key.document_id) in db_keys:
                 continue
 

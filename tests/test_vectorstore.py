@@ -2,16 +2,18 @@ import asyncio
 
 import pytest
 
-from app.core.rag import GLOBAL_WORKSPACE_ID, DocumentChunk
 from app.core import vectorstore as vectorstore_module
+from app.core.rag import DocumentChunk
 from app.core.vectorstore import ChromaVectorStore
+
+WORKSPACE_ID = "1" * 32
 
 
 def make_chunk(
     document_id: str,
     index: int,
     text: str,
-    workspace_id: str = GLOBAL_WORKSPACE_ID,
+    workspace_id: str = WORKSPACE_ID,
 ) -> DocumentChunk:
     return DocumentChunk(
         id=f"{document_id}:{index}",
@@ -121,13 +123,14 @@ def test_chroma_store_persists_and_queries_chunks(tmp_path):
     results = asyncio.run(
         persisted_store.query(
             [1.0, 0.0],
+            workspace_id=WORKSPACE_ID,
             top_k=2,
             similarity_threshold=0.0,
         )
     )
 
     assert count == 2
-    assert asyncio.run(persisted_store.count()) == 2
+    assert asyncio.run(persisted_store.count(workspace_id=WORKSPACE_ID)) == 2
     assert [result.text for result in results] == [
         "apple document",
         "banana document",
@@ -149,6 +152,7 @@ def test_chroma_store_filters_results_below_similarity_threshold(tmp_path):
     filtered_results = asyncio.run(
         store.query(
             [1.0, 0.0],
+            workspace_id=WORKSPACE_ID,
             top_k=2,
             similarity_threshold=0.75,
         )
@@ -156,6 +160,7 @@ def test_chroma_store_filters_results_below_similarity_threshold(tmp_path):
     boundary_results = asyncio.run(
         store.query(
             [1.0, 0.0],
+            workspace_id=WORKSPACE_ID,
             top_k=2,
             similarity_threshold=0.0,
         )
@@ -179,9 +184,9 @@ def test_chroma_store_removes_stale_chunks_when_reindexing(tmp_path):
 
     new_chunks = [make_chunk(document_id, 0, "new content")]
     asyncio.run(store.upsert_chunks(new_chunks, [[1.0, 0.0]]))
-    results = asyncio.run(store.query([1.0, 0.0], top_k=5))
+    results = asyncio.run(store.query([1.0, 0.0], workspace_id=WORKSPACE_ID, top_k=5))
 
-    assert asyncio.run(store.count()) == 1
+    assert asyncio.run(store.count(workspace_id=WORKSPACE_ID)) == 1
     assert [result.id for result in results] == [f"{document_id}:0"]
     assert results[0].text == "new content"
 
@@ -211,34 +216,24 @@ def test_chroma_store_filters_chunks_by_workspace(tmp_path):
     assert results[0].workspace_id == first_workspace
 
 
-def test_chroma_store_default_query_only_reads_global_chunks(tmp_path):
+def test_chroma_store_requires_workspace_scope(tmp_path):
     store = create_store(tmp_path)
-    workspace_id = "1" * 32
-    global_chunk = make_chunk("g" * 32, 0, "global document")
-    workspace_chunk = make_chunk("w" * 32, 0, "workspace document", workspace_id)
-    asyncio.run(store.upsert_chunks([global_chunk], [[1.0, 0.0]]))
-    asyncio.run(store.upsert_chunks([workspace_chunk], [[1.0, 0.0]]))
+    chunk = make_chunk("w" * 32, 0, "workspace document")
+    asyncio.run(store.upsert_chunks([chunk], [[1.0, 0.0]]))
 
-    default_results = asyncio.run(
-        store.query(
-            [1.0, 0.0],
-            top_k=5,
-            similarity_threshold=0.0,
+    with pytest.raises(TypeError):
+        asyncio.run(store.query([1.0, 0.0], top_k=5, similarity_threshold=0.0))
+    with pytest.raises(TypeError):
+        asyncio.run(store.count())
+    with pytest.raises(ValueError, match="workspace_id"):
+        asyncio.run(
+            store.query(
+                [1.0, 0.0],
+                workspace_id=" ",
+                top_k=5,
+                similarity_threshold=0.0,
+            )
         )
-    )
-    workspace_results = asyncio.run(
-        store.query(
-            [1.0, 0.0],
-            top_k=5,
-            similarity_threshold=0.0,
-            workspace_id=workspace_id,
-        )
-    )
-
-    assert asyncio.run(store.count()) == 1
-    assert [result.text for result in default_results] == ["global document"]
-    assert default_results[0].workspace_id == GLOBAL_WORKSPACE_ID
-    assert [result.text for result in workspace_results] == ["workspace document"]
 
 
 def test_chroma_store_deletes_document_chunks_by_workspace(tmp_path):

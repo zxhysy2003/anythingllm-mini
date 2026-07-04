@@ -164,7 +164,7 @@ Final Answer: 结果是 3
 - `app/tools/calculator.py`
 - `app/tools/document_tools.py`
 - `tests/test_agent_loop.py`
-- `docs/design/v4-agent-loop-design.md`
+- `docs/design/agent-loop-design.md`
 
 **后续可复习关键词：**
 

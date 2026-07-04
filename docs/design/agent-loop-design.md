@@ -1,18 +1,9 @@
-# V4 Agent Loop 与工具系统设计笔记
+# Agent Loop 与工具系统设计笔记
 
-## 阶段定位
+## 最终版定位
 
-V4 的目标不是完整移植 AnythingLLM Agent，而是在 V0-V3 的基础上补一个最小、
-可解释、可测试的 Agent 闭环。
-
-前面几个阶段已经完成了 Agent 需要的底座：
-
-- V0：可以调用 LLM。
-- V1：可以上传和解析文档。
-- V2：可以把文档分块、向量化并检索。
-- V3：有 Workspace、Conversation、聊天历史和 workspace-scoped RAG。
-
-因此 V4 应该增加的是：
+最终版不是完整移植 AnythingLLM Agent，而是在 Workspace、Conversation、
+workspace-scoped RAG 和工具系统之上保留一个最小、可解释、可测试的 Agent 闭环：
 
 ```text
 用户消息
@@ -33,7 +24,7 @@ AnythingLLM 的 Agent 能力包含更多产品化部分，例如 WebSocket 流�
 权限、调度、复杂工具生态和 UI 交互。mini 当前的学习目标更窄：只实现一个清晰的
 执行闭环。
 
-V4 暂不实现：
+当前最终版暂不实现：
 
 - 多用户权限和审计。
 - 后台 worker、定时任务和长任务调度。
@@ -124,7 +115,7 @@ ToolRegistry
 
 ### 4. Workspace 文档搜索工具
 
-把 V2/V3 已有 RAG 检索包装成工具：
+把 workspace-scoped RAG 检索包装成工具：
 
 ```text
 workspace_document_search(question, workspace_id, top_k, similarity_threshold)
@@ -132,8 +123,8 @@ workspace_document_search(question, workspace_id, top_k, similarity_threshold)
 
 为什么增加：
 
-- V3 chat 是固定先检索。
-- V4 agent 应该能主动决定是否需要查文档。
+- Workspace Chat 是固定先检索。
+- Workspace Agent 应该能主动决定是否需要查文档。
 
 好处：
 
@@ -143,13 +134,13 @@ workspace_document_search(question, workspace_id, top_k, similarity_threshold)
 
 注意：
 
-- 工具必须始终使用当前 `workspace_id`，不能访问全局 `__global__` 文档。
+- 工具必须始终使用当前 `workspace_id`，系统不再保留全局文档检索范围。
 - 工具结果不应该直接把全部文档正文塞进长期历史。
 - 返回内容应包含必要 source 信息，方便最终答案引用。
 
 ### 5. Agent Step 记录
 
-V3 已保存 user/assistant message。V4 需要记录中间步骤，例如：
+Workspace conversation 已保存 user/assistant message。Agent 需要记录中间步骤，例如：
 
 ```text
 step_index
@@ -168,7 +159,7 @@ error
 - 更清晰版：新增 `agent_steps` 表，通过 `conversation_message_id` 关联最终 assistant
   message。
 
-建议 V4 最小实现先用 `metrics["agent_steps"]`，避免一开始就引入迁移和额外表结构；
+当前最小实现先用 `metrics["agent_steps"]`，避免一开始就引入迁移和额外表结构；
 如果步骤查询、失败恢复或 UI 展示需求变多，再升级为独立表。
 
 长期判断：
@@ -216,7 +207,7 @@ agent_steps
 - `metrics["agent_steps"]` 适合作为学习版和 summary 快照，开发快、无迁移成本。
 - 独立表适合长期产品化，便于查询、调试、重放、统计工具调用次数和失败率，也避免
   `ConversationMessage.metrics` 越来越大。
-- V4 当前仍先使用 metrics；当进入 UI 展示、失败排查、统计分析或长任务恢复时，再升级
+- 当前仍先使用 metrics；当进入 UI 展示、失败排查、统计分析或长任务恢复时，再升级
   为 `agent_invocations` + `agent_steps`。
 
 为什么增加：
@@ -264,9 +255,8 @@ POST /workspaces/{workspace_id}/conversations/{conversation_id}/agent
 
 为什么增加：
 
-- V4 应继承 V3 的 Workspace 和 Conversation 边界。
-- 旧 `/chat`、`/documents/upload`、`/rag/query` 是学习用 legacy endpoint，不应继续承载
-  新 Agent 能力。
+- Agent 继承 Workspace 和 Conversation 边界。
+- 最终版只保留 workspace-aware API，不再暴露旧的全局学习 endpoint。
 
 好处：
 
@@ -280,7 +270,7 @@ POST /workspaces/{workspace_id}/conversations/{conversation_id}/agent
 
 状态：当前文档。
 
-先明确 V4 只做最小闭环，不动业务代码。
+先明确 Agent 只做最小闭环，不动无关业务代码。
 
 ### Step 2：抽出 Workspace Chat 上下文准备逻辑
 
@@ -297,7 +287,7 @@ build context prompt
 decide query refusal
 ```
 
-普通 chat 和 agent 都可以复用这部分，避免 V4 复制 V3 主流程。
+普通 chat 和 agent 都可以复用这部分，避免复制 workspace chat 主流程。
 
 ### Step 3：实现 Tool 与 ToolRegistry
 
@@ -364,7 +354,7 @@ message 的 metrics：
 
 ## 验收标准
 
-V4 最小闭环完成时，应满足：
+最终版最小闭环应满足：
 
 - 可以通过 workspace conversation agent endpoint 发送消息。
 - Agent 能在不需要工具时直接回答。
@@ -373,7 +363,7 @@ V4 最小闭环完成时，应满足：
 - `max_steps` 能阻止无限循环。
 - 工具输入非法时返回可解释错误，并保存失败步骤。
 - 普通 `/workspaces/{workspace_id}/conversations/{conversation_id}/chat` 行为不变。
-- 旧 `/chat`、`/documents/upload`、`/rag/query` 仍保持 legacy 学习入口。
+- 旧 `/chat`、`/documents/upload`、`/rag/query` 不再作为最终版 API 暴露。
 - 测试覆盖 agent loop、tool registry、calculator、document search 工具和 API 路由。
 
 ## 主要风险
@@ -407,18 +397,18 @@ V4 最小闭环完成时，应满足：
 - `workspace_id` 由 `AgentService` 注入，不允许 LLM 自己提供。
 - 工具内部只调用 workspace-scoped `RAGService.retrieve()`。
 
-### 4. V4 过早扩大范围
+### 4. Agent 过早扩大范围
 
 如果一开始就做 streaming、多 provider、复杂工具权限和后台任务，会拖慢核心学习。
 
 缓解：
 
-- V4 只做同步最小闭环。
+- Agent 只做同步最小闭环。
 - 先保证 agent loop、tool call、step persistence 可测试。
 
 ## 当前结论
 
-V4 应增加的是一个 workspace-aware 的最小 Agent Loop，而不是完整 Agent 平台。
+最终版保留的是一个 workspace-aware 的最小 Agent Loop，而不是完整 Agent 平台。
 
 最小功能集合：
 
@@ -430,5 +420,5 @@ V4 应增加的是一个 workspace-aware 的最小 Agent Loop，而不是完整 
 - Agent step 记录。
 - Workspace Conversation 下的 Agent API。
 
-这样可以把 V0 的 LLM、V2 的 RAG、V3 的 Workspace/Conversation 串成一个真正的
+这样可以把 LLM、workspace-scoped RAG、Workspace/Conversation 串成一个真正的
 Agent 执行闭环，同时保持学习项目的范围足够小、边界足够清楚。
