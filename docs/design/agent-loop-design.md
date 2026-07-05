@@ -153,14 +153,14 @@ latency_ms
 error
 ```
 
-设计选择有两种：
+当前实现采用独立持久化：
 
-- 学习版：先保存在 assistant message 的 `metrics["agent_steps"]` 中。
-- 更清晰版：新增 `agent_steps` 表，通过 `conversation_message_id` 关联最终 assistant
-  message。
+- `agent_invocations`：保存一次 Agent 运行的输入、最终消息关联、模型信息、状态和汇总指标。
+- `agent_steps`：保存这次运行中的每个中间步骤、工具输入输出和失败信息。
 
-当前最小实现先用 `metrics["agent_steps"]`，避免一开始就引入迁移和额外表结构；
-如果步骤查询、失败恢复或 UI 展示需求变多，再升级为独立表。
+Assistant message 的 `metrics` 不再保存完整 `agent_steps`，只保留轻量 summary 和
+`agent_invocation_id`。这样普通聊天历史仍然只包含 user/assistant message，而调试、
+统计和 UI 展示可以通过 invocation 记录查询完整步骤。
 
 长期判断：
 
@@ -169,7 +169,7 @@ error
 `workspace_id`、`user_id`、`thread_id`、`closed` 等信息；Agent 触发后会先创建
 invocation，再由 WebSocket 挂接执行过程。
 
-因此 mini 的长期方向不应只依赖 assistant message 的 `metrics` JSON。更合理的演进是：
+因此 mini 不再只依赖 assistant message 的 `metrics` JSON。当前结构是：
 
 ```text
 agent_invocations
@@ -179,14 +179,21 @@ agent_invocations
 - user_message_id
 - assistant_message_id
 - input_message
+- agent_mode
 - status
 - provider
 - model
 - max_steps
+- llm_call_count
+- step_count
+- tool_call_count
+- failed_step_count
+- source_count
 - max_steps_reached
+- total_latency_ms
 - started_at
 - ended_at
-- error
+- created_at
 
 agent_steps
 - id
@@ -198,17 +205,16 @@ agent_steps
 - observation
 - ok
 - error
-- latency_ms
+- tool_result
 - created_at
 ```
 
 取舍：
 
-- `metrics["agent_steps"]` 适合作为学习版和 summary 快照，开发快、无迁移成本。
 - 独立表适合长期产品化，便于查询、调试、重放、统计工具调用次数和失败率，也避免
   `ConversationMessage.metrics` 越来越大。
-- 当前仍先使用 metrics；当进入 UI 展示、失败排查、统计分析或长任务恢复时，再升级
-  为 `agent_invocations` + `agent_steps`。
+- `ConversationMessage.metrics` 继续保留汇总指标，因为普通 chat/RAG 也在使用该字段；
+  但 Agent 的完整中间步骤已经迁出到 `agent_steps`。
 
 为什么增加：
 
@@ -334,19 +340,19 @@ POST /workspaces/{workspace_id}/conversations/{conversation_id}/agent
 
 本阶段只负责把 Step 4 的 `AgentLoop` 暴露到 workspace conversation 边界中，返回
 answer、steps、sources、provider、model 和 metrics。Step 5 暂不保存 user/assistant
-message，也不写入 `metrics["agent_steps"]`；持久化留给 Step 6。
+message，也不写入持久化表；持久化留给 Step 6。
 
 ### Step 6：保存最终消息和中间步骤
 
 状态：已完成。
 
-最终仍保存一条 user message 和一条 assistant message。中间步骤先放入 assistant
-message 的 metrics：
+最终仍保存一条 user message 和一条 assistant message。中间步骤保存到独立
+`agent_invocations` / `agent_steps` 表，assistant message 的 metrics 只保存轻量入口：
 
 ```json
 {
   "agent_mode": "react_text",
-  "agent_steps": [],
+  "agent_invocation_id": "invocation-id",
   "tool_call_count": 1,
   "max_steps_reached": false
 }

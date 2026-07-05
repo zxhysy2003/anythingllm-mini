@@ -4,12 +4,19 @@ import pytest
 from pydantic import BaseModel, Field
 from sqlmodel import select
 
-from app.core.agent_loop import MAX_STEPS_ANSWER
+from app.core.agent_loop import DEFAULT_AGENT_STEPS, MAX_STEPS_ANSWER
 from app.core.rag import RetrievedChunk
+from app.models.agent import (
+    AGENT_INVOCATION_STATUS_COMPLETED,
+    AGENT_INVOCATION_STATUS_MAX_STEPS_REACHED,
+    AgentInvocation,
+    AgentStepRecord,
+)
 from app.models.conversation import ConversationMessage
 from app.services.agent_service import AgentService
 from app.services.chat_service import ChatResult
 from app.services.exceptions import (
+    AgentInvocationNotFoundError,
     ConversationNotFoundError,
     WorkspaceNotFoundError,
     WorkspacePersistenceError,
@@ -120,6 +127,17 @@ def list_message_count(session) -> int:
     return len(session.exec(select(ConversationMessage)).all())
 
 
+def list_invocations(session):
+    return list(session.exec(select(AgentInvocation)).all())
+
+
+def list_steps(session, invocation_id: str | None = None):
+    statement = select(AgentStepRecord).order_by(AgentStepRecord.step_index.asc())
+    if invocation_id is not None:
+        statement = statement.where(AgentStepRecord.invocation_id == invocation_id)
+    return list(session.exec(statement).all())
+
+
 def list_messages(session):
     statement = select(ConversationMessage).order_by(ConversationMessage.created_at)
     return list(session.exec(statement).all())
@@ -142,12 +160,14 @@ def test_agent_service_returns_final_answer_and_saves_exchange(session):
     )
 
     assert result.conversation_id == conversation.id
+    assert result.agent_invocation_id
     assert result.message == "hello agent"
     assert result.answer == "no tool needed"
     assert result.steps == []
     assert result.sources == []
     assert result.provider == "fake"
     assert result.model == "fake-agent-model"
+    assert result.metrics.max_steps == DEFAULT_AGENT_STEPS
     assert result.metrics.llm_call_count == 1
     assert result.metrics.step_count == 0
     assert result.metrics.tool_call_count == 0
@@ -167,9 +187,23 @@ def test_agent_service_returns_final_answer_and_saves_exchange(session):
     assert messages[1].provider == "fake"
     assert messages[1].model == "fake-agent-model"
     assert messages[1].metrics["agent_mode"] == "react_text"
-    assert messages[1].metrics["agent_steps"] == []
+    assert messages[1].metrics["agent_invocation_id"] == result.agent_invocation_id
+    assert "agent_steps" not in messages[1].metrics
     assert messages[1].metrics["tool_call_count"] == 0
     assert messages[1].metrics["max_steps_reached"] is False
+
+    invocation = session.get(AgentInvocation, result.agent_invocation_id)
+    assert invocation is not None
+    assert invocation.workspace_id == workspace.id
+    assert invocation.conversation_id == conversation.id
+    assert invocation.user_message_id == messages[0].id
+    assert invocation.assistant_message_id == messages[1].id
+    assert invocation.input_message == "hello agent"
+    assert invocation.agent_mode == "react_text"
+    assert invocation.status == AGENT_INVOCATION_STATUS_COMPLETED
+    assert invocation.max_steps == DEFAULT_AGENT_STEPS
+    assert invocation.step_count == 0
+    assert list_steps(session, invocation.id) == []
     session.refresh(conversation)
     assert conversation.title == "hello agent"
 
@@ -203,13 +237,47 @@ def test_agent_service_calls_calculator_then_returns_final_answer(session):
     assert result.metrics.failed_step_count == 0
 
     assistant_message = list_messages(session)[1]
-    assert assistant_message.metrics["agent_steps"] == [
-        result.steps[0].model_dump(mode="json")
-    ]
-    assert assistant_message.metrics["agent_steps"][0]["action"] == "calculator"
-    assert assistant_message.metrics["agent_steps"][0]["tool_result"]["data"] == {
-        "result": 7
-    }
+    assert "agent_steps" not in assistant_message.metrics
+    assert (
+        assistant_message.metrics["agent_invocation_id"] == result.agent_invocation_id
+    )
+    step_records = list_steps(session, result.agent_invocation_id)
+    assert len(step_records) == 1
+    assert step_records[0].action == "calculator"
+    assert step_records[0].tool_result["data"] == {"result": 7}
+
+    invocation = agent_service.get_invocation(
+        session,
+        workspace.id,
+        conversation.id,
+        result.agent_invocation_id,
+    )
+    assert invocation.status == AGENT_INVOCATION_STATUS_COMPLETED
+    assert invocation.steps == result.steps
+
+
+def test_agent_service_get_invocation_rejects_wrong_conversation(session):
+    agent_service, workspace_service, _, workspace, conversation = make_services(
+        session,
+        ["Final Answer: answer"],
+    )
+    result = asyncio.run(
+        agent_service.run_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "hello",
+        )
+    )
+    other_conversation = workspace_service.create_conversation(session, workspace.id)
+
+    with pytest.raises(AgentInvocationNotFoundError):
+        agent_service.get_invocation(
+            session,
+            workspace.id,
+            other_conversation.id,
+            result.agent_invocation_id,
+        )
 
 
 def test_agent_service_passes_tool_context_to_tools(session):
@@ -320,11 +388,10 @@ def test_agent_service_persists_failed_tool_step(session):
     )
 
     assert result.metrics.failed_step_count == 1
-    assistant_message = list_messages(session)[1]
-    persisted_step = assistant_message.metrics["agent_steps"][0]
-    assert persisted_step["ok"] is False
-    assert persisted_step["error"] == "unknown_tool"
-    assert persisted_step["tool_result"]["error"] == "unknown_tool"
+    persisted_step = list_steps(session, result.agent_invocation_id)[0]
+    assert persisted_step.ok is False
+    assert persisted_step.error == "unknown_tool"
+    assert persisted_step.tool_result["error"] == "unknown_tool"
 
 
 def test_agent_service_persists_invalid_tool_input_step(session):
@@ -346,11 +413,10 @@ def test_agent_service_persists_invalid_tool_input_step(session):
     )
 
     assert result.metrics.failed_step_count == 1
-    assistant_message = list_messages(session)[1]
-    persisted_step = assistant_message.metrics["agent_steps"][0]
-    assert persisted_step["ok"] is False
-    assert persisted_step["error"] == "invalid_tool_input"
-    assert persisted_step["tool_result"]["error"] == "invalid_tool_input"
+    persisted_step = list_steps(session, result.agent_invocation_id)[0]
+    assert persisted_step.ok is False
+    assert persisted_step.error == "invalid_tool_input"
+    assert persisted_step.tool_result["error"] == "invalid_tool_input"
 
 
 def test_agent_service_reports_max_steps_reached(session):
@@ -371,10 +437,13 @@ def test_agent_service_reports_max_steps_reached(session):
 
     assert result.answer == MAX_STEPS_ANSWER
     assert result.metrics.max_steps_reached is True
+    assert result.metrics.max_steps == 1
     assert result.metrics.llm_call_count == 1
     assert result.metrics.step_count == 1
     assistant_message = list_messages(session)[1]
     assert assistant_message.metrics["max_steps_reached"] is True
+    invocation = session.get(AgentInvocation, result.agent_invocation_id)
+    assert invocation.status == AGENT_INVOCATION_STATUS_MAX_STEPS_REACHED
 
 
 def test_agent_service_rolls_back_when_saving_exchange_fails(session, monkeypatch):
@@ -406,6 +475,8 @@ def test_agent_service_rolls_back_when_saving_exchange_fails(session, monkeypatc
 
     monkeypatch.setattr(session, "commit", original_commit)
     assert list_message_count(session) == 0
+    assert list_invocations(session) == []
+    assert list_steps(session) == []
 
 
 def test_agent_service_raises_for_missing_workspace(session):

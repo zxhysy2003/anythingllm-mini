@@ -10,6 +10,10 @@ class RAGQueryError(RuntimeError):
     """Raised when document retrieval fails."""
 
 
+class AgentInvocationNotFoundError(LookupError):
+    """Raised when an agent invocation does not belong to the conversation."""
+
+
 class WorkspaceNotFoundError(LookupError):
     """Raised when a workspace id does not exist."""
 

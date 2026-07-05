@@ -266,8 +266,8 @@ def list_conversations(
     summary="List conversation messages",
     description=(
         "Read saved user and assistant messages for one workspace conversation. "
-        "Agent steps are visible on the assistant message metrics rather than "
-        "as separate tool messages."
+        "Agent assistant message metrics contain an agent_invocation_id for "
+        "loading separate persisted agent steps."
     ),
 )
 def list_conversation_messages(

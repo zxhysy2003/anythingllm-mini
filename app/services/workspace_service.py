@@ -10,6 +10,7 @@ from sqlmodel import Session, select
 from app.core.config import settings
 from app.core.llm import ChatMessage, DEFAULT_SYSTEM_PROMPT
 from app.core.rag import RetrievedChunk
+from app.models.agent import AgentInvocation, AgentStepRecord
 from app.models.conversation import (
     DEFAULT_CONVERSATION_TITLE,
     Conversation,
@@ -157,6 +158,14 @@ class WorkspaceService:
             session,
             [conversation.id for conversation in conversations],
         )
+        agent_invocations = self._load_workspace_agent_invocations(
+            session,
+            workspace.id,
+        )
+        agent_steps = self._load_agent_steps(
+            session,
+            [invocation.id for invocation in agent_invocations],
+        )
 
         logger.info(
             "workspace.delete.start",
@@ -166,6 +175,8 @@ class WorkspaceService:
                 "document_count": len(documents),
                 "conversation_count": len(conversations),
                 "message_count": len(messages),
+                "agent_invocation_count": len(agent_invocations),
+                "agent_step_count": len(agent_steps),
             },
         )
 
@@ -218,6 +229,8 @@ class WorkspaceService:
             documents,
             conversations,
             messages,
+            agent_invocations,
+            agent_steps,
         )
         try:
             session.commit()
@@ -537,6 +550,32 @@ class WorkspaceService:
         )
         return list(session.exec(statement).all())
 
+    def _load_workspace_agent_invocations(
+        self,
+        session: Session,
+        workspace_id: str,
+    ) -> list[AgentInvocation]:
+        statement = (
+            select(AgentInvocation)
+            .where(AgentInvocation.workspace_id == workspace_id)
+            .order_by(AgentInvocation.created_at.asc())
+        )
+        return list(session.exec(statement).all())
+
+    def _load_agent_steps(
+        self,
+        session: Session,
+        invocation_ids: list[str],
+    ) -> list[AgentStepRecord]:
+        if not invocation_ids:
+            return []
+        statement = (
+            select(AgentStepRecord)
+            .where(AgentStepRecord.invocation_id.in_(invocation_ids))
+            .order_by(AgentStepRecord.created_at.asc())
+        )
+        return list(session.exec(statement).all())
+
     async def _build_workspace_deletion_plans(
         self,
         documents: list[WorkspaceDocument],
@@ -559,7 +598,13 @@ class WorkspaceService:
         documents: list[WorkspaceDocument],
         conversations: list[Conversation],
         messages: list[ConversationMessage],
+        agent_invocations: list[AgentInvocation],
+        agent_steps: list[AgentStepRecord],
     ) -> None:
+        for step in agent_steps:
+            session.delete(step)
+        for invocation in agent_invocations:
+            session.delete(invocation)
         for message in messages:
             session.delete(message)
         for conversation in conversations:

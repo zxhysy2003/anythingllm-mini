@@ -1,8 +1,9 @@
 from alembic import command
 from sqlalchemy import inspect, text
-from sqlmodel import Session, create_engine
+from sqlmodel import Session, create_engine, select
 
 from app.db.init_db import alembic_config, create_db_and_tables
+from app.models.agent import AgentInvocation, AgentStepRecord
 from app.models.conversation import ConversationMessage
 
 
@@ -17,13 +18,16 @@ def test_create_db_and_tables_runs_alembic_upgrade_for_new_database(tmp_path):
     create_db_and_tables(engine)
 
     inspector = inspect(engine)
-    assert "alembic_version" in inspector.get_table_names()
+    table_names = inspector.get_table_names()
+    assert "alembic_version" in table_names
+    assert "agent_invocations" in table_names
+    assert "agent_steps" in table_names
     assert "metrics" in {
         column["name"] for column in inspector.get_columns("conversation_messages")
     }
     with engine.connect() as connection:
         version = connection.execute(text("select version_num from alembic_version"))
-    assert version.scalar_one() == "0002_add_message_metrics"
+    assert version.scalar_one() == "0003_add_agent_invocations_and_steps"
 
 
 def test_existing_sqlite_without_metrics_can_be_stamped_and_upgraded(tmp_path):
@@ -74,8 +78,13 @@ def test_existing_sqlite_without_metrics_can_be_stamped_and_upgraded(tmp_path):
         for column in inspect(engine).get_columns("conversation_messages")
     }
     assert "metrics" in columns
+    table_names = inspect(engine).get_table_names()
+    assert "agent_invocations" in table_names
+    assert "agent_steps" in table_names
     with Session(engine) as session:
         message = session.get(ConversationMessage, "m1")
         assert message is not None
         assert message.content == "answer"
         assert message.metrics == {}
+        assert session.exec(select(AgentInvocation)).all() == []
+        assert session.exec(select(AgentStepRecord)).all() == []

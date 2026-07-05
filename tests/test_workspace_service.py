@@ -9,9 +9,15 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import select
 
 from app.core.rag import RetrievedChunk
+from app.models.agent import (
+    AGENT_INVOCATION_STATUS_COMPLETED,
+    AGENT_MODE_REACT_TEXT,
+    AgentInvocation,
+    AgentStepRecord,
+)
 from app.models.conversation import Conversation, ConversationMessage
 from app.models.document import WorkspaceDocument
-from app.models.workspace import Workspace
+from app.models.workspace import Workspace, utc_now
 from app.services.chat_service import ChatServiceError
 from app.services.document_service import DocumentService
 from app.services.rag_service import NO_CONTEXT_ANSWER, RAGIndexError
@@ -433,6 +439,41 @@ def test_delete_workspace_removes_documents_conversations_messages_and_files(
             "please answer from my document",
         )
     )
+    messages = service.list_messages(session, workspace.id, conversation.id)
+    invocation = AgentInvocation(
+        workspace_id=workspace.id,
+        conversation_id=conversation.id,
+        user_message_id=messages[0].id,
+        assistant_message_id=messages[1].id,
+        input_message="please answer from my document",
+        agent_mode=AGENT_MODE_REACT_TEXT,
+        status=AGENT_INVOCATION_STATUS_COMPLETED,
+        provider="fake",
+        model="fake-model",
+        max_steps=5,
+        llm_call_count=2,
+        step_count=1,
+        tool_call_count=1,
+        failed_step_count=0,
+        source_count=0,
+        max_steps_reached=False,
+        total_latency_ms=12,
+        started_at=utc_now(),
+        ended_at=utc_now(),
+    )
+    step = AgentStepRecord(
+        invocation_id=invocation.id,
+        step_index=1,
+        llm_output='Action: calculator\nAction Input: {"expression": "1 + 1"}',
+        action="calculator",
+        action_input={"expression": "1 + 1"},
+        observation="2",
+        ok=True,
+        tool_result={"ok": True, "content": "2", "data": {"result": 2}},
+    )
+    session.add(invocation)
+    session.add(step)
+    session.commit()
 
     result = asyncio.run(service.delete_workspace(session, workspace.id))
 
@@ -448,6 +489,8 @@ def test_delete_workspace_removes_documents_conversations_messages_and_files(
     assert session.exec(select(WorkspaceDocument)).all() == []
     assert session.exec(select(Conversation)).all() == []
     assert session.exec(select(ConversationMessage)).all() == []
+    assert session.exec(select(AgentInvocation)).all() == []
+    assert session.exec(select(AgentStepRecord)).all() == []
     assert not upload_path.exists()
     assert not parsed_path.exists()
     assert not upload_path.parent.exists()

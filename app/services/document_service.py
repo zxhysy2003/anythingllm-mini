@@ -277,10 +277,7 @@ class DocumentService:
         except Exception:
             if temporary_path.exists():
                 temporary_path.unlink()
-            try:
-                parsed_path.parent.rmdir()
-            except OSError:
-                pass
+            self._remove_empty_dir(parsed_path.parent)
             raise
 
     def _delete_document_files(
@@ -381,10 +378,7 @@ class DocumentService:
         if upload_path.exists():
             upload_path.unlink()
 
-        try:
-            document_dir.rmdir()
-        except OSError:
-            pass
+        self._remove_empty_dir(document_dir)
 
 
 document_service = DocumentService()

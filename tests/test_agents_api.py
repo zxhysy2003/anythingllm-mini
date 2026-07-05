@@ -112,12 +112,14 @@ def test_agent_endpoint_runs_agent_loop(agent_api):
     assert response.status_code == 200
     payload = response.json()
     assert payload["conversation_id"] == conversation["id"]
+    assert payload["agent_invocation_id"]
     assert payload["message"] == "calculate"
     assert payload["answer"] == "the result is 7"
     assert payload["provider"] == "fake"
     assert payload["model"] == "fake-agent-model"
     assert payload["steps"][0]["action"] == "calculator"
     assert payload["steps"][0]["observation"] == "7"
+    assert payload["metrics"]["max_steps"] == 5
     assert payload["metrics"]["llm_call_count"] == 2
     assert payload["metrics"]["step_count"] == 1
     assert payload["metrics"]["tool_call_count"] == 1
@@ -135,8 +137,22 @@ def test_agent_endpoint_runs_agent_loop(agent_api):
     assert messages[1]["provider"] == "fake"
     assert messages[1]["model"] == "fake-agent-model"
     assert messages[1]["metrics"]["agent_mode"] == "react_text"
-    assert messages[1]["metrics"]["agent_steps"][0] == payload["steps"][0]
+    assert (
+        messages[1]["metrics"]["agent_invocation_id"] == payload["agent_invocation_id"]
+    )
+    assert "agent_steps" not in messages[1]["metrics"]
     assert messages[1]["metrics"]["tool_call_count"] == 1
+
+    invocation_response = client.get(
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}"
+        f"/agent-invocations/{payload['agent_invocation_id']}"
+    )
+    assert invocation_response.status_code == 200
+    invocation = invocation_response.json()
+    assert invocation["id"] == payload["agent_invocation_id"]
+    assert invocation["assistant_message_id"] == messages[1]["id"]
+    assert invocation["status"] == "completed"
+    assert invocation["steps"] == payload["steps"]
 
 
 @pytest.mark.parametrize("max_steps", [0, 11])
@@ -151,6 +167,26 @@ def test_agent_endpoint_validates_max_steps(agent_api, max_steps):
     )
 
     assert response.status_code == 422
+
+
+def test_agent_invocation_endpoint_rejects_wrong_conversation(agent_api):
+    client, _ = agent_api(["Final Answer: answer"])
+    workspace = create_workspace(client)
+    conversation = create_conversation(client, workspace["id"])
+    response = client.post(
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}/agent",
+        json={"message": "hello"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    other_conversation = create_conversation(client, workspace["id"])
+
+    invocation_response = client.get(
+        f"/workspaces/{workspace['id']}/conversations/{other_conversation['id']}"
+        f"/agent-invocations/{payload['agent_invocation_id']}"
+    )
+
+    assert invocation_response.status_code == 404
 
 
 def test_agent_endpoint_returns_404_for_missing_workspace(agent_api):
@@ -207,8 +243,16 @@ def test_agent_endpoint_returns_tool_failure_as_step(agent_api):
     messages = client.get(
         f"/workspaces/{workspace['id']}/conversations/{conversation['id']}/messages"
     ).json()
-    assert messages[1]["metrics"]["agent_steps"][0]["ok"] is False
-    assert messages[1]["metrics"]["agent_steps"][0]["error"] == "unknown_tool"
+    assert "agent_steps" not in messages[1]["metrics"]
+
+    invocation_response = client.get(
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}"
+        f"/agent-invocations/{payload['agent_invocation_id']}"
+    )
+    assert invocation_response.status_code == 200
+    invocation = invocation_response.json()
+    assert invocation["steps"][0]["ok"] is False
+    assert invocation["steps"][0]["error"] == "unknown_tool"
 
 
 def test_workspace_chat_endpoint_still_behaves_normally(agent_api):
@@ -242,4 +286,10 @@ def test_agent_openapi_route_documents_agent_endpoint():
     ]["post"]
     assert operation["summary"] == "Workspace agent loop"
     assert "minimal ReAct text agent loop" in operation["description"]
-    assert "assistant message metrics" in operation["description"]
+    assert "separate agent invocation record" in operation["description"]
+
+    invocation_operation = schema["paths"][
+        "/workspaces/{workspace_id}/conversations/{conversation_id}"
+        "/agent-invocations/{invocation_id}"
+    ]["get"]
+    assert invocation_operation["summary"] == "Read workspace agent invocation"

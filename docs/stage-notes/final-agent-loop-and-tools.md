@@ -185,37 +185,25 @@ user message
 assistant message
 ```
 
-中间工具调用不保存成单独 message，避免污染普通聊天历史。工具步骤先保存在 assistant
-message 的 `metrics["agent_steps"]` 中：
+中间工具调用不保存成单独 message，避免污染普通聊天历史。工具步骤保存到
+`agent_invocations` / `agent_steps` 表；assistant message 的 `metrics` 只保留
+`agent_invocation_id` 和汇总指标：
 
 ```json
 {
   "agent_mode": "react_text",
-  "agent_steps": [
-    {
-      "step_index": 1,
-      "llm_output": "Action: calculator\nAction Input: {\"expression\": \"1 + 2\"}",
-      "action": "calculator",
-      "action_input": {
-        "expression": "1 + 2"
-      },
-      "observation": "3",
-      "ok": true,
-      "error": null,
-      "tool_result": {
-        "ok": true,
-        "content": "3",
-        "data": {
-          "result": 3
-        },
-        "error": null
-      }
-    }
-  ],
+  "agent_invocation_id": "invocation-id",
+  "max_steps": 5,
   "tool_call_count": 1,
   "failed_step_count": 0,
   "max_steps_reached": false
 }
+```
+
+完整步骤通过 invocation 查询：
+
+```text
+GET /workspaces/{workspace_id}/conversations/{conversation_id}/agent-invocations/{invocation_id}
 ```
 
 Assistant message 同时保存：
@@ -223,8 +211,8 @@ Assistant message 同时保存：
 - `content`：最终答案。
 - `sources`：工具检索出的 source 快照。
 - `provider` 和 `model`。
-- `metrics`：LLM 调用次数、step 数、工具调用数、失败 step 数、source 数、
-  `max_steps_reached` 和总耗时。
+- `metrics`：`agent_invocation_id`、LLM 调用次数、step 数、工具调用数、
+  失败 step 数、source 数、`max_steps_reached` 和总耗时。
 
 如果保存 user/assistant message 失败，服务会 rollback，并抛
 `WorkspacePersistenceError("failed to save agent conversation messages")`。
@@ -328,7 +316,7 @@ git diff --check
 - 后台任务、定时任务和长任务恢复。
 - 多用户权限、审计和工具授权。
 - 外部浏览器、CLI、文件系统、邮件、日历等高风险工具。
-- 独立 `agent_invocations` / `agent_steps` 表。
+- WebSocket/SSE 事件流中的实时 step 推送。
 
-当前 `metrics["agent_steps"]` 适合作为学习版调试快照。后续如果要做 UI 展示、失败排查、
-统计分析、重放或长任务恢复，再升级为独立表会更合适。
+当前版本已经把新产生的 Agent 运行步骤迁到 `agent_invocations` / `agent_steps` 表。
+旧 assistant message metrics 中如果已经存在历史 `agent_steps`，本阶段不做清洗或回填。

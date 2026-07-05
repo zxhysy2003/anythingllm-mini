@@ -1,6 +1,7 @@
 from fastapi import HTTPException, status
 
 from app.services.exceptions import (
+    AgentInvocationNotFoundError,
     ChatServiceError,
     ConversationNotFoundError,
     RAGIndexError,
@@ -18,6 +19,7 @@ def to_http_exception(exc: Exception) -> HTTPException:
             WorkspaceNotFoundError,
             ConversationNotFoundError,
             WorkspaceDocumentNotFoundError,
+            AgentInvocationNotFoundError,
         ),
     ):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))

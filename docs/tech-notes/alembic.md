@@ -68,7 +68,7 @@ flowchart TD
     I --> J["数据库结构到达 head"]
 ```
 
-当前项目已经存在两份迁移：
+当前项目已经存在三份迁移：
 
 1. `0001_baseline_v3_schema`
    - 表示 V3 时期已有的基础表结构。
@@ -79,6 +79,10 @@ flowchart TD
    - 在 `conversation_messages` 表上新增 `metrics` JSON 列。
    - 默认值是 `{}`。
    - 对应 V3.5 中 Workspace chat metrics 的持久化需求。
+
+3. `0003_add_agent_invocations_and_steps`
+   - 新增 `agent_invocations` 和 `agent_steps` 表。
+   - 对应 post-V4 Agent invocation / step 独立持久化需求。
 
 处理旧库的流程：
 
@@ -165,7 +169,7 @@ conda run -n anythingllm-mini pytest -q
 
 - 现象：代码已经需要读写 `ConversationMessage.metrics`，但旧的 `conversation_messages` 表没有这个字段。
 - 原因：之前项目没有正式 migration 体系，`create_all()` 不会修改已有表。
-- 解决：新增 `0001_baseline_v3_schema` 表示旧库已有结构，再新增 `0002_add_message_metrics` 补列；旧库执行 `stamp 0001` 后再 `upgrade head`。
+- 解决：新增 `0001_baseline_v3_schema` 表示旧库已有结构，再新增 `0002_add_message_metrics` 补列；旧库执行 `stamp 0001` 后再 `upgrade head`，会继续升级到包含 Agent invocation / step 表的最新版本。
 
 问题 2：不能把已有旧表重新 create 一遍。
 
