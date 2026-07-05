@@ -3,7 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.core.agent_loop import DEFAULT_AGENT_STEPS, MAX_AGENT_STEPS
+from app.core.agent_executor import DEFAULT_AGENT_STEPS, MAX_AGENT_STEPS
 from app.services.rag_service import RAGSource
 
 

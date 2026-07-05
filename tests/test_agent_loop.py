@@ -3,9 +3,10 @@ import asyncio
 import pytest
 from pydantic import BaseModel, Field
 
+from app.core.agent_executor import MAX_STEPS_ANSWER
+from app.core.agent_modes import AGENT_MODE_REACT_TEXT
 from app.core.agent_loop import (
-    MAX_STEPS_ANSWER,
-    AgentLoop,
+    ReactTextAgentExecutor,
     build_agent_system_prompt,
     parse_agent_output,
 )
@@ -76,12 +77,12 @@ def run_agent(
     context=None,
     max_steps=5,
 ):
-    loop = AgentLoop(
+    executor = ReactTextAgentExecutor(
         llm=FakeLLM(responses),
         tool_registry=registry,
     )
     return asyncio.run(
-        loop.run(
+        executor.run(
             "What should I do?",
             context or ToolContext(workspace_id="workspace-1"),
             system_prompt="You are a workspace assistant.",
@@ -140,11 +141,12 @@ def test_agent_returns_final_answer_without_tool_call():
     assert result.max_steps_reached is False
     assert result.provider == "fake"
     assert result.model == "fake-agent-model"
+    assert result.agent_mode == AGENT_MODE_REACT_TEXT
 
 
 def test_agent_calls_calculator_then_returns_final_answer():
     registry = make_registry(CalculatorTool())
-    loop = AgentLoop(
+    executor = ReactTextAgentExecutor(
         llm=FakeLLM(
             [
                 'Action: calculator\nAction Input: {"expression": "1 + 2 * 3"}',
@@ -155,7 +157,7 @@ def test_agent_calls_calculator_then_returns_final_answer():
     )
 
     result = asyncio.run(
-        loop.run(
+        executor.run(
             "calculate",
             ToolContext(),
             system_prompt="You are a calculator agent.",
@@ -173,6 +175,7 @@ def test_agent_calls_calculator_then_returns_final_answer():
     assert result.steps[0].observation == "7"
     assert result.steps[0].tool_result is not None
     assert result.steps[0].tool_result.data == {"result": 7}
+    assert result.agent_mode == AGENT_MODE_REACT_TEXT
 
 
 def test_agent_records_invalid_tool_input_and_allows_final_answer():
@@ -191,6 +194,7 @@ def test_agent_records_invalid_tool_input_and_allows_final_answer():
     assert result.steps[0].error == "invalid_tool_input"
     assert result.steps[0].tool_result is not None
     assert result.steps[0].tool_result.error == "invalid_tool_input"
+    assert result.agent_mode == AGENT_MODE_REACT_TEXT
 
 
 def test_agent_records_unknown_tool_and_allows_final_answer():
@@ -206,11 +210,12 @@ def test_agent_records_unknown_tool_and_allows_final_answer():
     assert len(result.steps) == 1
     assert result.steps[0].ok is False
     assert result.steps[0].error == "unknown_tool"
+    assert result.agent_mode == AGENT_MODE_REACT_TEXT
 
 
 def test_agent_records_parse_error_and_allows_final_answer():
     registry = make_registry(CalculatorTool())
-    loop = AgentLoop(
+    executor = ReactTextAgentExecutor(
         llm=FakeLLM(
             [
                 "Action: calculator",
@@ -221,7 +226,7 @@ def test_agent_records_parse_error_and_allows_final_answer():
     )
 
     result = asyncio.run(
-        loop.run(
+        executor.run(
             "calculate",
             ToolContext(),
             system_prompt="system",
@@ -237,6 +242,7 @@ def test_agent_records_parse_error_and_allows_final_answer():
     assert result.steps[0].observation == (
         "Agent output parse error: missing_action_input"
     )
+    assert result.agent_mode == AGENT_MODE_REACT_TEXT
 
 
 def test_agent_stops_after_max_steps():
@@ -254,6 +260,7 @@ def test_agent_stops_after_max_steps():
     assert result.max_steps_reached is True
     assert result.llm_call_count == 2
     assert len(result.steps) == 2
+    assert result.agent_mode == AGENT_MODE_REACT_TEXT
 
 
 def test_agent_passes_tool_context_to_tools():
@@ -276,18 +283,19 @@ def test_agent_passes_tool_context_to_tools():
     assert result.answer == "captured"
     assert tool.seen_workspace_id == "workspace-abc"
     assert tool.seen_conversation_id == "conversation-abc"
+    assert result.agent_mode == AGENT_MODE_REACT_TEXT
 
 
 @pytest.mark.parametrize("max_steps", [0, 11])
 def test_agent_rejects_invalid_max_steps(max_steps):
-    loop = AgentLoop(
+    executor = ReactTextAgentExecutor(
         llm=FakeLLM(["Final Answer: done"]),
         tool_registry=make_registry(),
     )
 
     with pytest.raises(ValueError, match="max_steps must be between"):
         asyncio.run(
-            loop.run(
+            executor.run(
                 "hello",
                 ToolContext(),
                 system_prompt="system",

@@ -5,11 +5,11 @@ from uuid import uuid4
 from sqlalchemy import Column, JSON
 from sqlmodel import Field, SQLModel
 
+from app.core.agent_modes import AGENT_MODE_REACT_TEXT
 from app.models.workspace import utc_now
 
 AGENT_INVOCATION_STATUS_COMPLETED = "completed"
 AGENT_INVOCATION_STATUS_MAX_STEPS_REACHED = "max_steps_reached"
-AGENT_MODE_REACT_TEXT = "react_text"
 
 
 class AgentInvocation(SQLModel, table=True):

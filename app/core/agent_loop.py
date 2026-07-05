@@ -4,15 +4,20 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
+from app.core.agent_executor import (
+    DEFAULT_AGENT_STEPS,
+    MAX_AGENT_STEPS,
+    MAX_STEPS_ANSWER,
+    AgentRunResult,
+    AgentStep,
+)
+from app.core.agent_modes import AGENT_MODE_REACT_TEXT
 from app.core.llm import DEFAULT_SYSTEM_PROMPT, ChatMessage
-from app.tools.registry import ToolContext, ToolRegistry, ToolResult
+from app.tools.registry import ToolContext, ToolRegistry
 
 FINAL_ANSWER_PREFIX = "Final Answer:"
 ACTION_PREFIX = "Action:"
 ACTION_INPUT_PREFIX = "Action Input:"
-MAX_AGENT_STEPS = 10
-DEFAULT_AGENT_STEPS = 5
-MAX_STEPS_ANSWER = "Agent stopped after reaching the maximum number of steps."
 
 
 class AgentChatClient(Protocol):
@@ -31,27 +36,6 @@ class ParsedAgentOutput(BaseModel):
     action: str | None = None
     action_input: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
-
-
-class AgentStep(BaseModel):
-    step_index: int
-    llm_output: str
-    action: str | None = None
-    action_input: dict[str, Any] = Field(default_factory=dict)
-    observation: str | None = None
-    ok: bool
-    error: str | None = None
-    tool_result: ToolResult | None = None
-
-
-class AgentRunResult(BaseModel):
-    message: str
-    answer: str
-    steps: list[AgentStep]
-    provider: str | None = None
-    model: str | None = None
-    llm_call_count: int
-    max_steps_reached: bool
 
 
 def parse_agent_output(output: str) -> ParsedAgentOutput:
@@ -130,7 +114,9 @@ def build_agent_system_prompt(
     )
 
 
-class AgentLoop:
+class ReactTextAgentExecutor:
+    agent_mode = AGENT_MODE_REACT_TEXT
+
     def __init__(
         self,
         llm: AgentChatClient,
@@ -183,6 +169,7 @@ class AgentLoop:
                     model=model,
                     llm_call_count=step_index,
                     max_steps_reached=False,
+                    agent_mode=self.agent_mode,
                 )
 
             if parsed.error is not None:
@@ -223,6 +210,7 @@ class AgentLoop:
             model=model,
             llm_call_count=max_steps,
             max_steps_reached=True,
+            agent_mode=self.agent_mode,
         )
 
     def _build_agent_message(

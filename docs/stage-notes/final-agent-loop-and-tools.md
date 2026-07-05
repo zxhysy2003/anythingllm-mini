@@ -22,7 +22,8 @@ POST /workspaces/{workspace_id}/conversations/{conversation_id}/agent
   -> app/api/agents.py
   -> AgentService.run_in_conversation()
   -> WorkspaceService.prepare_workspace_conversation_context()
-  -> AgentLoop.run()
+  -> AgentExecutor.run()
+  -> ReactTextAgentExecutor.run()
   -> ReAct parser
   -> ToolRegistry.run()
   -> calculator 或 workspace_document_search
@@ -39,6 +40,8 @@ app/tools/document_tools.py     -> Workspace 文档搜索工具
 app/services/agent_service.py   -> Workspace 边界、历史、执行和持久化编排
 app/api/agents.py               -> Workspace Conversation Agent API
 app/api/schemas/agents.py       -> Agent request/response schema
+app/core/agent_executor.py      -> AgentExecutor protocol、共享结果类型和 step 上限
+app/core/agent_modes.py         -> 当前可运行 agent mode 常量
 ```
 
 ## ReAct Text Protocol
@@ -147,7 +150,7 @@ BaseTool
 ```text
 AgentService
 -> ToolContext(workspace_id=context.workspace.id, conversation_id=context.conversation.id)
--> AgentLoop
+-> ReactTextAgentExecutor
 -> ToolRegistry.run("workspace_document_search", ...)
 -> WorkspaceDocumentSearchTool
 -> RAGService.retrieve(..., workspace_id=context.workspace_id)
@@ -166,9 +169,9 @@ AgentService
 
 1. 复用 `WorkspaceService.prepare_workspace_conversation_context()` 加载 Workspace、
    Conversation、规范化后的 message 和历史。
-2. 构造 `ToolContext`，把当前 `workspace_id` 和 `conversation_id` 注入 Agent Loop。
+2. 构造 `ToolContext`，把当前 `workspace_id` 和 `conversation_id` 注入 Agent executor。
 3. 根据 Workspace 的 `system_prompt`、`chat_mode`、`temperature` 和历史运行
-   `AgentLoop`。
+   `ReactTextAgentExecutor`。
 4. 从工具步骤中提取 `workspace_document_search` 返回的 sources。
 5. 统计 agent metrics。
 6. 保存最终 user message 和 assistant message。
@@ -267,8 +270,8 @@ GET /workspaces/{workspace_id}/conversations/{conversation_id}/messages
 
 Agent 的失败边界分层处理：
 
-- message 为空：请求校验或 AgentLoop 校验失败。
-- `max_steps` 不在 `1..10`：请求校验或 AgentLoop 校验失败。
+- message 为空：请求校验或 `ReactTextAgentExecutor` 校验失败。
+- `max_steps` 不在 `1..10`：请求校验或 `ReactTextAgentExecutor` 校验失败。
 - LLM 输出格式错误：记录 failed step，并允许下一轮修正。
 - 未知工具：`ToolRegistry.run()` 返回 `ToolResult(ok=False, error="unknown_tool")`。
 - 工具输入非法：`ToolRegistry.run()` 返回
@@ -278,7 +281,7 @@ Agent 的失败边界分层处理：
 - DB 保存失败：rollback，并返回 `WorkspacePersistenceError`。
 
 工具失败属于 Agent 过程的一部分：只要 Agent 后续给出 `Final Answer`，HTTP 仍可以返回
-200，并把失败 step 保存到 assistant message 的 metrics 中。
+200，并把失败 step 保存到独立 `agent_steps` 表中。
 
 ## Tests
 
@@ -288,8 +291,8 @@ Agent 的失败边界分层处理：
 - `tests/test_calculator_tool.py`：安全计算器的支持表达式、拒绝危险表达式、除零和大数边界。
 - `tests/test_document_tools.py`：Workspace 文档搜索工具的 workspace 约束、参数透传、
   sources 返回和无结果行为。
-- `tests/test_agent_loop.py`：ReAct parser、AgentLoop、parse error、unknown tool、
-  invalid input、`max_steps` 和 prompt builder。
+- `tests/test_agent_loop.py`：ReAct parser、`ReactTextAgentExecutor`、parse error、
+  unknown tool、invalid input、`max_steps`、`agent_mode` 和 prompt builder。
 - `tests/test_agent_service.py`：Workspace context 注入、calculator、document search、
   sources 提取、消息持久化、失败 step 持久化、标题更新和 rollback。
 - `tests/test_agents_api.py`：Agent endpoint、messages endpoint 读回、失败工具步骤持久化、
@@ -320,3 +323,8 @@ git diff --check
 
 当前版本已经把新产生的 Agent 运行步骤迁到 `agent_invocations` / `agent_steps` 表。
 旧 assistant message metrics 中如果已经存在历史 `agent_steps`，本阶段不做清洗或回填。
+
+当前 executor 边界已经拆出：`AgentService` 依赖 `AgentExecutor` protocol，默认运行
+`ReactTextAgentExecutor`。当前唯一可运行的 `agent_mode` 仍是 `react_text`。
+`native_tool_calling` 需要 provider adapter 先支持结构化 `tools` / `tool_calls`，后续应作为
+独立能力线实现。

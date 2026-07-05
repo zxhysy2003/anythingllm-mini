@@ -6,15 +6,15 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
-from app.core.agent_loop import (
+from app.core.agent_executor import (
     DEFAULT_AGENT_STEPS,
-    AgentLoop,
+    AgentExecutor,
     AgentStep,
 )
+from app.core.agent_loop import ReactTextAgentExecutor
 from app.models.agent import (
     AGENT_INVOCATION_STATUS_COMPLETED,
     AGENT_INVOCATION_STATUS_MAX_STEPS_REACHED,
-    AGENT_MODE_REACT_TEXT,
     AgentInvocation,
     AgentStepRecord,
 )
@@ -101,18 +101,17 @@ class AgentService:
         self,
         *,
         workspace: WorkspaceService | None = None,
-        agent_loop: AgentLoop | None = None,
+        agent_executor: AgentExecutor | None = None,
         chat: ChatService | None = None,
         tool_registry: ToolRegistry | None = None,
     ):
         self.workspace = workspace or workspace_service
-        if agent_loop is None:
-            registry = tool_registry or create_default_tool_registry()
-            agent_loop = AgentLoop(
+        if agent_executor is None:
+            agent_executor = ReactTextAgentExecutor(
                 llm=chat or chat_service,
-                tool_registry=registry,
+                tool_registry=tool_registry or create_default_tool_registry(),
             )
-        self.agent_loop = agent_loop
+        self.agent_executor = agent_executor
 
     async def run_in_conversation(
         self,
@@ -131,7 +130,7 @@ class AgentService:
             conversation_id,
             message,
         )
-        agent_result = await self.agent_loop.run(
+        agent_result = await self.agent_executor.run(
             message=context.message,
             context=ToolContext(
                 workspace_id=context.workspace.id,
@@ -168,6 +167,7 @@ class AgentService:
             agent_result.model,
             metrics,
             agent_result.steps,
+            agent_result.agent_mode,
             invocation_started_at,
             invocation_ended_at,
         )
@@ -256,6 +256,7 @@ class AgentService:
         model: str | None,
         metrics: WorkspaceAgentMetrics,
         steps: list[AgentStep],
+        agent_mode: str,
         invocation_started_at: datetime,
         invocation_ended_at: datetime,
     ) -> str:
@@ -278,7 +279,7 @@ class AgentService:
             user_message_id=user_message.id,
             assistant_message_id=assistant_message.id,
             input_message=user_content,
-            agent_mode=AGENT_MODE_REACT_TEXT,
+            agent_mode=agent_mode,
             status=self._invocation_status(metrics),
             provider=provider,
             model=model,
@@ -286,7 +287,11 @@ class AgentService:
             ended_at=invocation_ended_at,
             **metrics.model_dump(),
         )
-        assistant_message.metrics = self._message_metrics(metrics, invocation.id)
+        assistant_message.metrics = self._message_metrics(
+            metrics,
+            invocation.id,
+            agent_mode,
+        )
         now = utc_now()
         conversation.updated_at = now
         if conversation.title == DEFAULT_CONVERSATION_TITLE:
@@ -311,10 +316,11 @@ class AgentService:
         self,
         metrics: WorkspaceAgentMetrics,
         agent_invocation_id: str,
+        agent_mode: str,
     ) -> dict[str, Any]:
         return {
             **metrics.model_dump(mode="json"),
-            "agent_mode": AGENT_MODE_REACT_TEXT,
+            "agent_mode": agent_mode,
             "agent_invocation_id": agent_invocation_id,
         }
 

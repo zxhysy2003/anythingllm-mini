@@ -84,7 +84,8 @@ run(...)
 
 - 新增工具时不需要改 Agent Loop 主流程。
 - 工具能力和 Agent 执行逻辑解耦。
-- 后续可以学习 provider-native tool calling 或 MCP 风格接口。
+- 后续可以学习 provider-native tool calling 或 MCP 风格接口；当前只先把 executor
+  边界拆出来，避免在 ReAct 文本协议里硬塞 provider-native 分支。
 
 ### 3. Tool Registry
 
@@ -309,11 +310,12 @@ calculator
 workspace_document_search
 ```
 
-### Step 4：实现最小 Agent Loop
+### Step 4：实现最小 Agent Executor
 
 状态：已完成。
 
-先做 ReAct 文本协议，不急着接 provider-native tool calling。
+先做 ReAct 文本协议，不急着接 provider-native tool calling。当前 `AgentService`
+依赖 `AgentExecutor` protocol，默认执行器是 `ReactTextAgentExecutor`。
 
 模型输出可以约定为：
 
@@ -338,9 +340,13 @@ Final Answer: ...
 POST /workspaces/{workspace_id}/conversations/{conversation_id}/agent
 ```
 
-本阶段只负责把 Step 4 的 `AgentLoop` 暴露到 workspace conversation 边界中，返回
+本阶段只负责把 Step 4 的 `AgentExecutor` 暴露到 workspace conversation 边界中，返回
 answer、steps、sources、provider、model 和 metrics。Step 5 暂不保存 user/assistant
 message，也不写入持久化表；持久化留给 Step 6。
+
+当前对外 API 暂不暴露可选 `agent_mode`。`agent_invocations.agent_mode` 记录实际运行的
+executor mode，目前只有 `react_text`；未来 `native_tool_calling` 需要先扩展 provider
+adapter，使其能发送 OpenAI-compatible `tools` schema 并读取结构化 `tool_calls`。
 
 ### Step 6：保存最终消息和中间步骤
 

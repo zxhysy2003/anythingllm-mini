@@ -4,7 +4,13 @@ import pytest
 from pydantic import BaseModel, Field
 from sqlmodel import select
 
-from app.core.agent_loop import DEFAULT_AGENT_STEPS, MAX_STEPS_ANSWER
+from app.core.agent_executor import (
+    DEFAULT_AGENT_STEPS,
+    MAX_STEPS_ANSWER,
+    AgentRunResult,
+)
+from app.core.agent_loop import ReactTextAgentExecutor
+from app.core.agent_modes import AGENT_MODE_REACT_TEXT
 from app.core.rag import RetrievedChunk
 from app.models.agent import (
     AGENT_INVOCATION_STATUS_COMPLETED,
@@ -48,6 +54,34 @@ class ScriptedAgentChat:
             answer=self.responses[response_index],
             provider="fake",
             model="fake-agent-model",
+        )
+
+
+class FixedModeExecutor:
+    agent_mode = "test_mode"
+
+    def __init__(self):
+        self.max_steps = None
+
+    async def run(
+        self,
+        message,
+        context,
+        system_prompt,
+        history,
+        temperature,
+        max_steps,
+    ):
+        self.max_steps = max_steps
+        return AgentRunResult(
+            message=message.strip(),
+            answer="fixed answer",
+            steps=[],
+            agent_mode=self.agent_mode,
+            provider="fake",
+            model="fake-executor-model",
+            llm_call_count=1,
+            max_steps_reached=False,
         )
 
 
@@ -186,7 +220,7 @@ def test_agent_service_returns_final_answer_and_saves_exchange(session):
     assert messages[1].sources == []
     assert messages[1].provider == "fake"
     assert messages[1].model == "fake-agent-model"
-    assert messages[1].metrics["agent_mode"] == "react_text"
+    assert messages[1].metrics["agent_mode"] == AGENT_MODE_REACT_TEXT
     assert messages[1].metrics["agent_invocation_id"] == result.agent_invocation_id
     assert "agent_steps" not in messages[1].metrics
     assert messages[1].metrics["tool_call_count"] == 0
@@ -199,13 +233,52 @@ def test_agent_service_returns_final_answer_and_saves_exchange(session):
     assert invocation.user_message_id == messages[0].id
     assert invocation.assistant_message_id == messages[1].id
     assert invocation.input_message == "hello agent"
-    assert invocation.agent_mode == "react_text"
+    assert invocation.agent_mode == AGENT_MODE_REACT_TEXT
     assert invocation.status == AGENT_INVOCATION_STATUS_COMPLETED
     assert invocation.max_steps == DEFAULT_AGENT_STEPS
     assert invocation.step_count == 0
     assert list_steps(session, invocation.id) == []
     session.refresh(conversation)
     assert conversation.title == "hello agent"
+
+
+def test_agent_service_defaults_to_react_text_executor(session):
+    agent_service, _, _, _, _ = make_services(
+        session,
+        ["Final Answer: no tool needed"],
+    )
+
+    assert isinstance(agent_service.agent_executor, ReactTextAgentExecutor)
+
+
+def test_agent_service_persists_agent_mode_from_executor(session):
+    workspace_service = WorkspaceService(
+        rag=FakeRAGService(),
+        chat=FakeChatService(echo=True),
+    )
+    agent_executor = FixedModeExecutor()
+    agent_service = AgentService(
+        workspace=workspace_service,
+        agent_executor=agent_executor,
+    )
+    workspace = workspace_service.create_workspace(session, name="Agent workspace")
+    conversation = workspace_service.create_conversation(session, workspace.id)
+
+    result = asyncio.run(
+        agent_service.run_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "hello",
+            max_steps=3,
+        )
+    )
+
+    messages = list_messages(session)
+    invocation = session.get(AgentInvocation, result.agent_invocation_id)
+    assert messages[1].metrics["agent_mode"] == "test_mode"
+    assert invocation.agent_mode == "test_mode"
+    assert agent_executor.max_steps == 3
 
 
 def test_agent_service_calls_calculator_then_returns_final_answer(session):

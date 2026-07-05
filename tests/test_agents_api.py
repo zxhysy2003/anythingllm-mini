@@ -151,6 +151,7 @@ def test_agent_endpoint_runs_agent_loop(agent_api):
     invocation = invocation_response.json()
     assert invocation["id"] == payload["agent_invocation_id"]
     assert invocation["assistant_message_id"] == messages[1]["id"]
+    assert invocation["agent_mode"] == "react_text"
     assert invocation["status"] == "completed"
     assert invocation["steps"] == payload["steps"]
 
