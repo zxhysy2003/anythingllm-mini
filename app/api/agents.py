@@ -29,11 +29,12 @@ SessionDependency = Annotated[Session, Depends(get_session)]
     response_model=WorkspaceAgentResponse,
     summary="Workspace agent loop",
     description=(
-        "Run the minimal ReAct text agent loop inside one workspace "
-        "conversation. The agent can call registered tools such as calculator "
-        "and workspace_document_search, saves the final user/assistant "
-        "messages, and stores intermediate agent steps on a separate agent "
-        "invocation record."
+        "Run a minimal workspace agent executor inside one conversation. "
+        "The default mode is ReAct text, and requests may opt into DeepSeek "
+        "native tool calling. The agent can call registered tools such as "
+        "calculator and workspace_document_search, saves the final "
+        "user/assistant messages, and stores intermediate agent steps on a "
+        "separate agent invocation record."
     ),
 )
 async def run_agent_in_conversation(
@@ -49,6 +50,7 @@ async def run_agent_in_conversation(
             conversation_id,
             request.message,
             max_steps=request.max_steps,
+            agent_mode=request.agent_mode,
         )
         return WorkspaceAgentResponse.model_validate(result)
     except (

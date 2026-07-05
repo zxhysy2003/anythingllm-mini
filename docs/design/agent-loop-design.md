@@ -314,8 +314,13 @@ workspace_document_search
 
 状态：已完成。
 
-先做 ReAct 文本协议，不急着接 provider-native tool calling。当前 `AgentService`
-依赖 `AgentExecutor` protocol，默认执行器是 `ReactTextAgentExecutor`。
+当前 `AgentService` 依赖 `AgentExecutor` protocol，已支持两个可选执行器：
+
+- `ReactTextAgentExecutor`：默认模式，使用 ReAct 文本协议和本地 parser。
+- `DeepSeekNativeToolCallingExecutor`：使用 DeepSeek/OpenAI-compatible
+  `tools` / `tool_calls`。
+
+默认仍是 `react_text`，方便保持最小文本协议的学习路径。
 
 模型输出可以约定为：
 
@@ -344,9 +349,12 @@ POST /workspaces/{workspace_id}/conversations/{conversation_id}/agent
 answer、steps、sources、provider、model 和 metrics。Step 5 暂不保存 user/assistant
 message，也不写入持久化表；持久化留给 Step 6。
 
-当前对外 API 暂不暴露可选 `agent_mode`。`agent_invocations.agent_mode` 记录实际运行的
-executor mode，目前只有 `react_text`；未来 `native_tool_calling` 需要先扩展 provider
-adapter，使其能发送 OpenAI-compatible `tools` schema 并读取结构化 `tool_calls`。
+对外 API 暴露可选 `agent_mode`，默认 `react_text`，可显式选择
+`native_tool_calling`。`agent_invocations.agent_mode` 记录实际运行的 executor mode。
+
+`native_tool_calling` 已扩展 DeepSeek provider adapter，使其能发送
+OpenAI-compatible `tools` schema，并读取结构化 `tool_calls`。DeepSeek beta strict mode
+暂不启用，工具输入仍由本地 Pydantic / `ToolRegistry.run()` 最终校验。
 
 ### Step 6：保存最终消息和中间步骤
 
@@ -372,6 +380,7 @@ adapter，使其能发送 OpenAI-compatible `tools` schema 并读取结构化 `t
 - Agent 能在不需要工具时直接回答。
 - Agent 能调用 calculator 并用结果回答。
 - Agent 能调用 workspace document search，并只检索当前 workspace 的文档。
+- Agent endpoint 可以显式选择 `native_tool_calling`，并把实际 mode 写入 invocation。
 - `max_steps` 能阻止无限循环。
 - 工具输入非法时返回可解释错误，并保存失败步骤。
 - 普通 `/workspaces/{workspace_id}/conversations/{conversation_id}/chat` 行为不变。

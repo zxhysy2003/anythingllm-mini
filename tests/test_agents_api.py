@@ -3,6 +3,8 @@ from fastapi.testclient import TestClient
 
 from app.api import agents as agents_api
 from app.api import workspaces as workspaces_api
+from app.core.llm import DeepSeekToolCall, DeepSeekToolCallResult
+from app.core.native_tool_calling import DeepSeekNativeToolCallingExecutor
 from app.db.session import get_session
 from app.main import app
 from app.services.agent_service import AgentService
@@ -39,9 +41,44 @@ class ScriptedAgentChat:
         )
 
 
+class ScriptedToolCallingClient:
+    def __init__(self, responses: list[DeepSeekToolCallResult]):
+        self.responses = responses
+        self.calls = []
+
+    async def chat_with_tools(self, messages, tools, temperature, tool_choice):
+        self.calls.append(
+            {
+                "messages": messages,
+                "tools": tools,
+                "temperature": temperature,
+                "tool_choice": tool_choice,
+            }
+        )
+        return self.responses[len(self.calls) - 1]
+
+
+def native_tool_result(content, *, tool_calls=None, finish_reason="stop"):
+    return DeepSeekToolCallResult(
+        content=content,
+        tool_calls=tool_calls or [],
+        finish_reason=finish_reason,
+        provider="fake",
+        model="fake-native-model",
+    )
+
+
+def native_tool_call(name, arguments, *, call_id="call-1"):
+    return DeepSeekToolCall(
+        id=call_id,
+        name=name,
+        arguments=arguments,
+    )
+
+
 @pytest.fixture
 def agent_api(tmp_path, monkeypatch, session_override):
-    def make_client(responses, *, registry=None):
+    def make_client(responses, *, registry=None, native_agent_executor=None):
         rag = FakeRAGService(indexed_chunk_count=1, deleted_chunk_count=1)
         document_service = DocumentService(
             upload_dir=tmp_path / "uploads",
@@ -66,6 +103,7 @@ def agent_api(tmp_path, monkeypatch, session_override):
             workspace=workspace_service,
             chat=agent_chat,
             tool_registry=registry,
+            native_agent_executor=native_agent_executor,
         )
         app.dependency_overrides[get_session] = session_override
         monkeypatch.setattr(workspaces_api, "workspace_service", workspace_service)
@@ -156,6 +194,70 @@ def test_agent_endpoint_runs_agent_loop(agent_api):
     assert invocation["steps"] == payload["steps"]
 
 
+def test_agent_endpoint_runs_native_tool_calling_mode(agent_api):
+    registry = ToolRegistry()
+    registry.register(CalculatorTool())
+    native_client = ScriptedToolCallingClient(
+        [
+            native_tool_result(
+                "",
+                tool_calls=[
+                    native_tool_call("calculator", '{"expression": "1 + 2 * 3"}')
+                ],
+                finish_reason="tool_calls",
+            ),
+            native_tool_result("the result is 7"),
+        ]
+    )
+    native_executor = DeepSeekNativeToolCallingExecutor(
+        llm=native_client,
+        tool_registry=registry,
+    )
+    client, _ = agent_api(
+        ["Final Answer: unused"],
+        registry=registry,
+        native_agent_executor=native_executor,
+    )
+    workspace = create_workspace(client, system_prompt="Answer through tools.")
+    conversation = create_conversation(client, workspace["id"])
+
+    response = client.post(
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}/agent",
+        json={
+            "message": "calculate",
+            "max_steps": 5,
+            "agent_mode": "native_tool_calling",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "agent_mode" not in payload
+    assert payload["answer"] == "the result is 7"
+    assert payload["provider"] == "fake"
+    assert payload["model"] == "fake-native-model"
+    assert payload["steps"][0]["action"] == "calculator"
+    assert payload["steps"][0]["tool_result"]["data"] == {"result": 7}
+    assert payload["metrics"]["llm_call_count"] == 2
+    assert payload["metrics"]["tool_call_count"] == 1
+
+    messages_response = client.get(
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}/messages"
+    )
+    messages = messages_response.json()
+    assert messages[1]["metrics"]["agent_mode"] == "native_tool_calling"
+    assert "agent_steps" not in messages[1]["metrics"]
+
+    invocation_response = client.get(
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}"
+        f"/agent-invocations/{payload['agent_invocation_id']}"
+    )
+    invocation = invocation_response.json()
+    assert invocation["agent_mode"] == "native_tool_calling"
+    assert invocation["steps"] == payload["steps"]
+    assert native_client.calls[0]["tool_choice"] == "auto"
+
+
 @pytest.mark.parametrize("max_steps", [0, 11])
 def test_agent_endpoint_validates_max_steps(agent_api, max_steps):
     client, _ = agent_api(["Final Answer: unused"])
@@ -165,6 +267,19 @@ def test_agent_endpoint_validates_max_steps(agent_api, max_steps):
     response = client.post(
         f"/workspaces/{workspace['id']}/conversations/{conversation['id']}/agent",
         json={"message": "hello", "max_steps": max_steps},
+    )
+
+    assert response.status_code == 422
+
+
+def test_agent_endpoint_validates_agent_mode(agent_api):
+    client, _ = agent_api(["Final Answer: unused"])
+    workspace = create_workspace(client)
+    conversation = create_conversation(client, workspace["id"])
+
+    response = client.post(
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}/agent",
+        json={"message": "hello", "agent_mode": "missing_mode"},
     )
 
     assert response.status_code == 422
@@ -286,7 +401,8 @@ def test_agent_openapi_route_documents_agent_endpoint():
         "/workspaces/{workspace_id}/conversations/{conversation_id}/agent"
     ]["post"]
     assert operation["summary"] == "Workspace agent loop"
-    assert "minimal ReAct text agent loop" in operation["description"]
+    assert "default mode is ReAct text" in operation["description"]
+    assert "DeepSeek native tool calling" in operation["description"]
     assert "separate agent invocation record" in operation["description"]
 
     invocation_operation = schema["paths"][

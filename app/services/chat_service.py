@@ -1,9 +1,14 @@
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 from pydantic import BaseModel
 
 from app.core.config import settings
-from app.core.llm import DEFAULT_SYSTEM_PROMPT, ChatMessage, get_llm
+from app.core.llm import (
+    DEFAULT_SYSTEM_PROMPT,
+    ChatMessage,
+    DeepSeekToolCallResult,
+    get_llm,
+)
 from app.services.exceptions import ChatServiceError
 
 
@@ -48,4 +53,25 @@ class ChatService:
         )
 
 
+class ToolCallingChatService:
+    async def chat_with_tools(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        temperature: float | None = None,
+        tool_choice: str | Mapping[str, Any] = "auto",
+    ) -> DeepSeekToolCallResult:
+        llm = get_llm()
+        try:
+            return await llm.chat_with_tools(
+                messages=messages,
+                tools=tools,
+                temperature=temperature,
+                tool_choice=tool_choice,
+            )
+        except Exception as exc:
+            raise ChatServiceError(f"DeepSeek tool calling failed: {exc}") from exc
+
+
 chat_service = ChatService()
+tool_calling_chat_service = ToolCallingChatService()

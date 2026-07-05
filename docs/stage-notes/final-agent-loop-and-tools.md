@@ -23,8 +23,8 @@ POST /workspaces/{workspace_id}/conversations/{conversation_id}/agent
   -> AgentService.run_in_conversation()
   -> WorkspaceService.prepare_workspace_conversation_context()
   -> AgentExecutor.run()
-  -> ReactTextAgentExecutor.run()
-  -> ReAct parser
+  -> ReactTextAgentExecutor.run() 或 DeepSeekNativeToolCallingExecutor.run()
+  -> ReAct parser 或 DeepSeek tool_calls
   -> ToolRegistry.run()
   -> calculator 或 workspace_document_search
   -> 保存 user message 和 assistant message
@@ -42,6 +42,8 @@ app/api/agents.py               -> Workspace Conversation Agent API
 app/api/schemas/agents.py       -> Agent request/response schema
 app/core/agent_executor.py      -> AgentExecutor protocol、共享结果类型和 step 上限
 app/core/agent_modes.py         -> 当前可运行 agent mode 常量
+app/core/native_tool_calling.py -> DeepSeek provider-native tool calling executor
+app/core/llm.py                 -> DeepSeek text chat 和 native tool_calls adapter
 ```
 
 ## ReAct Text Protocol
@@ -72,6 +74,20 @@ Final Answer: 结果是 3
 
 这个协议比原生 function calling 更脆弱，但适合学习 Agent Loop 的核心结构：模型输出、
 解析、工具调用、observation、下一轮模型输出。
+
+## DeepSeek Native Tool Calling
+
+`native_tool_calling` 模式使用 DeepSeek/OpenAI-compatible 工具调用格式：
+
+- 请求向 DeepSeek 传入 `tools` 和 `tool_choice="auto"`。
+- 模型需要工具时返回 `message.tool_calls`。
+- 本地按顺序执行 tool calls，并把 `role="tool"`、`tool_call_id` 和工具结果追加回下一轮
+  messages。
+- 模型返回普通 content 时作为最终答案。
+
+这个模式不使用 `Action:` / `Action Input:` 文本 parser。工具输入仍由本地 Pydantic
+schema 和 `ToolRegistry.run()` 校验。DeepSeek beta strict mode 暂不启用，后续可以作为
+独立学习点处理。
 
 ## Tool System
 
@@ -150,7 +166,7 @@ BaseTool
 ```text
 AgentService
 -> ToolContext(workspace_id=context.workspace.id, conversation_id=context.conversation.id)
--> ReactTextAgentExecutor
+-> ReactTextAgentExecutor 或 DeepSeekNativeToolCallingExecutor
 -> ToolRegistry.run("workspace_document_search", ...)
 -> WorkspaceDocumentSearchTool
 -> RAGService.retrieve(..., workspace_id=context.workspace_id)
@@ -170,8 +186,8 @@ AgentService
 1. 复用 `WorkspaceService.prepare_workspace_conversation_context()` 加载 Workspace、
    Conversation、规范化后的 message 和历史。
 2. 构造 `ToolContext`，把当前 `workspace_id` 和 `conversation_id` 注入 Agent executor。
-3. 根据 Workspace 的 `system_prompt`、`chat_mode`、`temperature` 和历史运行
-   `ReactTextAgentExecutor`。
+3. 根据请求的 `agent_mode` 选择 executor，并传入 Workspace 的 `system_prompt`、
+   `chat_mode`、`temperature` 和历史。
 4. 从工具步骤中提取 `workspace_document_search` 返回的 sources。
 5. 统计 agent metrics。
 6. 保存最终 user message 和 assistant message。
@@ -233,9 +249,14 @@ POST /workspaces/{workspace_id}/conversations/{conversation_id}/agent
 ```json
 {
   "message": "请计算 1 + 2 * 3",
-  "max_steps": 5
+  "max_steps": 5,
+  "agent_mode": "native_tool_calling"
 }
 ```
+
+`agent_mode` 可选，默认是 `react_text`；可选值为 `react_text` 和
+`native_tool_calling`。响应体不直接增加 `agent_mode`，实际执行模式通过 invocation
+detail 读取。
 
 响应体：
 
@@ -271,8 +292,10 @@ GET /workspaces/{workspace_id}/conversations/{conversation_id}/messages
 Agent 的失败边界分层处理：
 
 - message 为空：请求校验或 `ReactTextAgentExecutor` 校验失败。
-- `max_steps` 不在 `1..10`：请求校验或 `ReactTextAgentExecutor` 校验失败。
-- LLM 输出格式错误：记录 failed step，并允许下一轮修正。
+- `max_steps` 不在 `1..10`：请求校验或 executor 校验失败。
+- ReAct 文本输出格式错误：记录 failed step，并允许下一轮修正。
+- native tool call arguments 不是合法 JSON object：记录 failed step，并把错误作为 tool
+  message 回传给模型修正。
 - 未知工具：`ToolRegistry.run()` 返回 `ToolResult(ok=False, error="unknown_tool")`。
 - 工具输入非法：`ToolRegistry.run()` 返回
   `ToolResult(ok=False, error="invalid_tool_input")`。
@@ -293,10 +316,12 @@ Agent 的失败边界分层处理：
   sources 返回和无结果行为。
 - `tests/test_agent_loop.py`：ReAct parser、`ReactTextAgentExecutor`、parse error、
   unknown tool、invalid input、`max_steps`、`agent_mode` 和 prompt builder。
+- `tests/test_native_tool_calling.py`：DeepSeek native tool calling executor、tool_calls、
+  tool message 回传、失败 step、多 tool call 和 `max_steps`。
 - `tests/test_agent_service.py`：Workspace context 注入、calculator、document search、
-  sources 提取、消息持久化、失败 step 持久化、标题更新和 rollback。
+  sources 提取、executor mode 选择、消息持久化、失败 step 持久化、标题更新和 rollback。
 - `tests/test_agents_api.py`：Agent endpoint、messages endpoint 读回、失败工具步骤持久化、
-  max_steps 请求校验和普通 workspace chat 回归。
+  `agent_mode` 请求校验、native mode 和普通 workspace chat 回归。
 
 常用验证命令：
 
@@ -314,7 +339,7 @@ git diff --check
 暂不实现：
 
 - WebSocket、SSE 或 streaming Agent。
-- provider-native tool calling。
+- DeepSeek beta strict mode。
 - Agent UI。
 - 后台任务、定时任务和长任务恢复。
 - 多用户权限、审计和工具授权。
@@ -325,6 +350,6 @@ git diff --check
 旧 assistant message metrics 中如果已经存在历史 `agent_steps`，本阶段不做清洗或回填。
 
 当前 executor 边界已经拆出：`AgentService` 依赖 `AgentExecutor` protocol，默认运行
-`ReactTextAgentExecutor`。当前唯一可运行的 `agent_mode` 仍是 `react_text`。
-`native_tool_calling` 需要 provider adapter 先支持结构化 `tools` / `tool_calls`，后续应作为
-独立能力线实现。
+`ReactTextAgentExecutor`，也可以通过 `agent_mode="native_tool_calling"` 运行
+`DeepSeekNativeToolCallingExecutor`。两种模式共享 `ToolRegistry`、`ToolContext`、
+`AgentStep`、invocation/step 持久化和 metrics 汇总。

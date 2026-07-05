@@ -10,7 +10,10 @@ from app.core.agent_executor import (
     AgentRunResult,
 )
 from app.core.agent_loop import ReactTextAgentExecutor
-from app.core.agent_modes import AGENT_MODE_REACT_TEXT
+from app.core.agent_modes import (
+    AGENT_MODE_NATIVE_TOOL_CALLING,
+    AGENT_MODE_REACT_TEXT,
+)
 from app.core.rag import RetrievedChunk
 from app.models.agent import (
     AGENT_INVOCATION_STATUS_COMPLETED,
@@ -83,6 +86,10 @@ class FixedModeExecutor:
             llm_call_count=1,
             max_steps_reached=False,
         )
+
+
+class FixedNativeExecutor(FixedModeExecutor):
+    agent_mode = AGENT_MODE_NATIVE_TOOL_CALLING
 
 
 class CaptureContextInput(BaseModel):
@@ -279,6 +286,38 @@ def test_agent_service_persists_agent_mode_from_executor(session):
     assert messages[1].metrics["agent_mode"] == "test_mode"
     assert invocation.agent_mode == "test_mode"
     assert agent_executor.max_steps == 3
+
+
+def test_agent_service_selects_native_tool_calling_executor(session):
+    workspace_service = WorkspaceService(
+        rag=FakeRAGService(),
+        chat=FakeChatService(echo=True),
+    )
+    native_agent_executor = FixedNativeExecutor()
+    agent_service = AgentService(
+        workspace=workspace_service,
+        native_agent_executor=native_agent_executor,
+    )
+    workspace = workspace_service.create_workspace(session, name="Agent workspace")
+    conversation = workspace_service.create_conversation(session, workspace.id)
+
+    result = asyncio.run(
+        agent_service.run_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "hello",
+            max_steps=2,
+            agent_mode=AGENT_MODE_NATIVE_TOOL_CALLING,
+        )
+    )
+
+    messages = list_messages(session)
+    invocation = session.get(AgentInvocation, result.agent_invocation_id)
+    assert result.answer == "fixed answer"
+    assert messages[1].metrics["agent_mode"] == AGENT_MODE_NATIVE_TOOL_CALLING
+    assert invocation.agent_mode == AGENT_MODE_NATIVE_TOOL_CALLING
+    assert native_agent_executor.max_steps == 2
 
 
 def test_agent_service_calls_calculator_then_returns_final_answer(session):

@@ -52,6 +52,18 @@ def test_registry_registers_gets_and_lists_tools():
     assert descriptions[0].description == "Echo input for registry tests."
     assert descriptions[0].input_schema["properties"]["value"]["minLength"] == 1
 
+    openai_tools = registry.list_openai_tools()
+    assert openai_tools == [
+        {
+            "type": "function",
+            "function": {
+                "name": "echo",
+                "description": "Echo input for registry tests.",
+                "parameters": descriptions[0].input_schema,
+            },
+        }
+    ]
+
 
 def test_registry_rejects_empty_and_duplicate_tool_names():
     registry = ToolRegistry()

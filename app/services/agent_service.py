@@ -11,7 +11,12 @@ from app.core.agent_executor import (
     AgentExecutor,
     AgentStep,
 )
+from app.core.agent_modes import (
+    AGENT_MODE_NATIVE_TOOL_CALLING,
+    AGENT_MODE_REACT_TEXT,
+)
 from app.core.agent_loop import ReactTextAgentExecutor
+from app.core.native_tool_calling import DeepSeekNativeToolCallingExecutor
 from app.models.agent import (
     AGENT_INVOCATION_STATUS_COMPLETED,
     AGENT_INVOCATION_STATUS_MAX_STEPS_REACHED,
@@ -24,7 +29,11 @@ from app.models.conversation import (
     ConversationMessage,
 )
 from app.models.workspace import utc_now
-from app.services.chat_service import ChatService, chat_service
+from app.services.chat_service import (
+    ChatService,
+    chat_service,
+    tool_calling_chat_service,
+)
 from app.services.exceptions import (
     AgentInvocationNotFoundError,
     WorkspacePersistenceError,
@@ -102,16 +111,29 @@ class AgentService:
         *,
         workspace: WorkspaceService | None = None,
         agent_executor: AgentExecutor | None = None,
+        native_agent_executor: AgentExecutor | None = None,
         chat: ChatService | None = None,
         tool_registry: ToolRegistry | None = None,
     ):
         self.workspace = workspace or workspace_service
+        registry = tool_registry or create_default_tool_registry()
         if agent_executor is None:
             agent_executor = ReactTextAgentExecutor(
                 llm=chat or chat_service,
-                tool_registry=tool_registry or create_default_tool_registry(),
+                tool_registry=registry,
+            )
+        if native_agent_executor is None:
+            native_agent_executor = DeepSeekNativeToolCallingExecutor(
+                llm=tool_calling_chat_service,
+                tool_registry=registry,
             )
         self.agent_executor = agent_executor
+        self.agent_executors = {
+            AGENT_MODE_REACT_TEXT: agent_executor,
+            agent_executor.agent_mode: agent_executor,
+            AGENT_MODE_NATIVE_TOOL_CALLING: native_agent_executor,
+            native_agent_executor.agent_mode: native_agent_executor,
+        }
 
     async def run_in_conversation(
         self,
@@ -121,16 +143,18 @@ class AgentService:
         message: str,
         *,
         max_steps: int = DEFAULT_AGENT_STEPS,
+        agent_mode: str = AGENT_MODE_REACT_TEXT,
     ) -> WorkspaceAgentResult:
         started_at = perf_counter()
         invocation_started_at = utc_now()
+        agent_executor = self._agent_executor(agent_mode)
         context = self.workspace.prepare_workspace_conversation_context(
             session,
             workspace_id,
             conversation_id,
             message,
         )
-        agent_result = await self.agent_executor.run(
+        agent_result = await agent_executor.run(
             message=context.message,
             context=ToolContext(
                 workspace_id=context.workspace.id,
@@ -215,6 +239,12 @@ class AgentService:
             **invocation.model_dump(),
             steps=steps,
         )
+
+    def _agent_executor(self, agent_mode: str) -> AgentExecutor:
+        try:
+            return self.agent_executors[agent_mode]
+        except KeyError:
+            raise ValueError(f"unsupported agent_mode: {agent_mode}") from None
 
     def _agent_system_prompt(self, base_prompt: str, chat_mode: str) -> str:
         if chat_mode != "query":

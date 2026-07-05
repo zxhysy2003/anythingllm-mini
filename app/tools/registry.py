@@ -58,6 +58,19 @@ class ToolRegistry:
             for name, tool in self._tools.items()
         ]
 
+    def list_openai_tools(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": description.name,
+                    "description": description.description,
+                    "parameters": description.input_schema,
+                },
+            }
+            for description in self.list_tools()
+        ]
+
     async def run(
         self,
         name: str,

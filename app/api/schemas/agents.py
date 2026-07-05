@@ -1,15 +1,19 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.agent_executor import DEFAULT_AGENT_STEPS, MAX_AGENT_STEPS
+from app.core.agent_modes import AGENT_MODE_REACT_TEXT
 from app.services.rag_service import RAGSource
+
+AgentModeRequest = Literal["react_text", "native_tool_calling"]
 
 
 class WorkspaceAgentRequest(BaseModel):
     message: str = Field(min_length=1)
     max_steps: int = Field(default=DEFAULT_AGENT_STEPS, ge=1, le=MAX_AGENT_STEPS)
+    agent_mode: AgentModeRequest = AGENT_MODE_REACT_TEXT
 
     @field_validator("message")
     @classmethod
