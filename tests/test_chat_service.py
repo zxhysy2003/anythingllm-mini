@@ -126,6 +126,26 @@ def test_deepseek_llm_chat_with_tools_passes_native_parameters():
     assert result.tool_calls[0].arguments == '{"expression": "1 + 1"}'
 
 
+def test_deepseek_llm_extract_text_ignores_reasoning_content():
+    llm = DeepSeekLLM.__new__(DeepSeekLLM)
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content='Action: calculator\nAction Input: {"expression": "1 + 1"}',
+                    reasoning_content=(
+                        'Action: calculator\nAction Input: {"expression": "bad"}'
+                    ),
+                )
+            )
+        ]
+    )
+
+    assert llm.extract_text(response) == (
+        'Action: calculator\nAction Input: {"expression": "1 + 1"}'
+    )
+
+
 def test_chat_service_rejects_empty_message():
     with pytest.raises(ValueError, match="message cannot be empty"):
         asyncio.run(chat_service_module.ChatService().chat(message="   "))

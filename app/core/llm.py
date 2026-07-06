@@ -102,11 +102,7 @@ class DeepSeekLLM:
             raise ValueError("DeepSeek returned no choices.")
 
         message = response.choices[0].message
-        content = message.content or ""
-        reasoning = getattr(message, "reasoning_content", None)
-        if reasoning:
-            return f"<think>{reasoning}</think>{content}"
-        return content
+        return message.content or ""
 
     async def chat_with_tools(
         self,
