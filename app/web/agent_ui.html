@@ -1,0 +1,1056 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AnythingLLM Mini Agent</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f5f7f8;
+        --surface: #ffffff;
+        --surface-soft: #eef2f1;
+        --line: #d8dfde;
+        --line-strong: #aebbbb;
+        --text: #17201f;
+        --muted: #60706e;
+        --primary: #1f6f5b;
+        --primary-dark: #155241;
+        --blue: #2f5f98;
+        --warning: #a35f16;
+        --danger: #a33a3a;
+        --shadow: 0 12px 30px rgba(29, 39, 38, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        font-size: 14px;
+        letter-spacing: 0;
+      }
+
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+      }
+
+      button {
+        min-height: 36px;
+        border: 1px solid var(--line-strong);
+        border-radius: 6px;
+        background: var(--surface);
+        color: var(--text);
+        cursor: pointer;
+      }
+
+      button:hover {
+        border-color: var(--primary);
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.58;
+      }
+
+      button.primary {
+        border-color: var(--primary);
+        background: var(--primary);
+        color: #ffffff;
+        font-weight: 700;
+      }
+
+      button.primary:hover {
+        background: var(--primary-dark);
+      }
+
+      input,
+      select,
+      textarea {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--surface);
+        color: var(--text);
+      }
+
+      input,
+      select {
+        height: 36px;
+        padding: 0 10px;
+      }
+
+      textarea {
+        min-height: 74px;
+        max-height: 220px;
+        padding: 10px 12px;
+        resize: vertical;
+        line-height: 1.45;
+      }
+
+      pre {
+        margin: 8px 0 0;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .app {
+        min-height: 100vh;
+        display: grid;
+        grid-template-rows: 56px minmax(0, 1fr);
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 0 20px;
+        border-bottom: 1px solid var(--line);
+        background: var(--surface);
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+        font-weight: 800;
+      }
+
+      .mark {
+        width: 30px;
+        height: 30px;
+        display: grid;
+        place-items: center;
+        border: 1px solid var(--primary);
+        border-radius: 6px;
+        color: var(--primary-dark);
+        font-weight: 900;
+      }
+
+      .status {
+        min-width: 0;
+        color: var(--muted);
+        text-align: right;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .status[data-tone="error"] {
+        color: var(--danger);
+      }
+
+      .status[data-tone="ok"] {
+        color: var(--primary-dark);
+      }
+
+      .shell {
+        min-height: 0;
+        display: grid;
+        grid-template-columns: 288px minmax(0, 1fr) 360px;
+      }
+
+      .sidebar,
+      .inspector {
+        min-height: 0;
+        overflow: auto;
+        background: var(--surface);
+      }
+
+      .sidebar {
+        border-right: 1px solid var(--line);
+        padding: 16px;
+      }
+
+      .inspector {
+        border-left: 1px solid var(--line);
+        padding: 16px;
+      }
+
+      .main {
+        min-width: 0;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: minmax(0, 1fr) auto;
+      }
+
+      .section {
+        margin-bottom: 20px;
+      }
+
+      .section:last-child {
+        margin-bottom: 0;
+      }
+
+      .section-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        min-height: 28px;
+        margin-bottom: 8px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+
+      .stack {
+        display: grid;
+        gap: 8px;
+      }
+
+      .row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+      }
+
+      .messages {
+        min-height: 0;
+        overflow: auto;
+        padding: 22px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .empty {
+        margin: auto;
+        max-width: 440px;
+        padding: 28px;
+        border: 1px dashed var(--line-strong);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.72);
+        color: var(--muted);
+        text-align: center;
+        line-height: 1.6;
+      }
+
+      .message {
+        width: min(760px, 92%);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--surface);
+        box-shadow: var(--shadow);
+        padding: 12px;
+      }
+
+      .message.user {
+        align-self: flex-end;
+        border-color: #bed0e5;
+        background: #eef4fb;
+      }
+
+      .message.assistant {
+        align-self: flex-start;
+      }
+
+      .message-meta {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 8px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .message-content {
+        white-space: pre-wrap;
+        word-break: break-word;
+        line-height: 1.55;
+      }
+
+      .message-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .small-button {
+        min-height: 30px;
+        padding: 0 9px;
+        font-size: 12px;
+      }
+
+      .composer {
+        border-top: 1px solid var(--line);
+        background: var(--surface);
+        padding: 14px 18px;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 210px;
+        gap: 12px;
+      }
+
+      .controls {
+        display: grid;
+        grid-template-columns: 1fr 76px;
+        gap: 8px;
+      }
+
+      .send-row {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 8px;
+      }
+
+      .metric-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .metric {
+        min-height: 58px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 9px;
+        background: var(--surface-soft);
+      }
+
+      .metric-value {
+        font-size: 18px;
+        font-weight: 800;
+      }
+
+      .metric-label {
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .step,
+      .source {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--surface);
+        padding: 10px;
+      }
+
+      .step + .step,
+      .source + .source {
+        margin-top: 8px;
+      }
+
+      .step-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        padding: 0 8px;
+        border-radius: 999px;
+        background: var(--surface-soft);
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .pill.ok {
+        background: #e6f3ed;
+        color: var(--primary-dark);
+      }
+
+      .pill.fail {
+        background: #f8eaea;
+        color: var(--danger);
+      }
+
+      .kv {
+        display: grid;
+        gap: 7px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .kv strong {
+        color: var(--text);
+      }
+
+      .source-title {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        font-weight: 800;
+      }
+
+      .source-text {
+        margin-top: 8px;
+        color: var(--muted);
+        line-height: 1.45;
+      }
+
+      .trace {
+        margin-top: 10px;
+        border-top: 1px solid var(--line);
+        padding-top: 10px;
+      }
+
+      @media (max-width: 1120px) {
+        .shell {
+          grid-template-columns: 260px minmax(0, 1fr);
+        }
+
+        .inspector {
+          display: none;
+        }
+      }
+
+      @media (max-width: 760px) {
+        .app {
+          grid-template-rows: auto minmax(0, 1fr);
+        }
+
+        .topbar {
+          min-height: 56px;
+          align-items: flex-start;
+          flex-direction: column;
+          padding: 12px 14px;
+        }
+
+        .status {
+          width: 100%;
+          text-align: left;
+        }
+
+        .shell {
+          grid-template-columns: 1fr;
+          grid-template-rows: auto minmax(0, 1fr);
+        }
+
+        .sidebar {
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+
+        .messages {
+          padding: 14px;
+        }
+
+        .message {
+          width: 100%;
+        }
+
+        .composer {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app" id="agent-app">
+      <header class="topbar">
+        <div class="brand" aria-label="AnythingLLM Mini Agent">
+          <div class="mark" aria-hidden="true">A</div>
+          <div>AnythingLLM Mini Agent</div>
+        </div>
+        <div class="status" id="status">Loading</div>
+      </header>
+
+      <div class="shell">
+        <aside class="sidebar">
+          <section class="section">
+            <div class="section-title">
+              <span>Workspace</span>
+              <button class="small-button" id="refresh-workspaces" type="button">
+                Refresh
+              </button>
+            </div>
+            <div class="stack">
+              <select id="workspace-select" aria-label="Workspace"></select>
+              <div class="row">
+                <input
+                  id="workspace-name"
+                  autocomplete="off"
+                  placeholder="Workspace name"
+                />
+                <button id="create-workspace" type="button">Create</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="section">
+            <div class="section-title">
+              <span>Conversation</span>
+              <button class="small-button" id="refresh-conversations" type="button">
+                Refresh
+              </button>
+            </div>
+            <div class="stack">
+              <select id="conversation-select" aria-label="Conversation"></select>
+              <button id="create-conversation" type="button">New conversation</button>
+            </div>
+          </section>
+
+          <section class="section">
+            <div class="section-title">Agent</div>
+            <div class="stack">
+              <select id="agent-mode" aria-label="Agent mode">
+                <option value="react_text">react_text</option>
+                <option value="native_tool_calling">native_tool_calling</option>
+              </select>
+              <input
+                id="max-steps"
+                type="number"
+                min="1"
+                max="10"
+                value="5"
+                aria-label="Max steps"
+              />
+            </div>
+          </section>
+        </aside>
+
+        <main class="main">
+          <section class="messages" id="messages" aria-live="polite"></section>
+          <form class="composer" id="agent-form">
+            <textarea
+              id="message-input"
+              placeholder="Ask the workspace agent"
+              aria-label="Message"
+            ></textarea>
+            <div class="send-row">
+              <div class="controls">
+                <select id="send-mode" aria-label="Send mode">
+                  <option value="agent">Agent</option>
+                </select>
+                <button class="primary" id="send-button" type="submit">Send</button>
+              </div>
+              <button id="reload-messages" type="button">Reload messages</button>
+            </div>
+          </form>
+        </main>
+
+        <aside class="inspector">
+          <section class="section">
+            <div class="section-title">Last run</div>
+            <div class="metric-grid" id="metrics"></div>
+          </section>
+          <section class="section">
+            <div class="section-title">Steps</div>
+            <div id="steps"></div>
+          </section>
+          <section class="section">
+            <div class="section-title">Sources</div>
+            <div id="sources"></div>
+          </section>
+        </aside>
+      </div>
+    </div>
+
+    <script>
+      (() => {
+        const state = {
+          workspaces: [],
+          workspaceId: "",
+          conversations: [],
+          conversationId: "",
+          messages: [],
+          busy: false,
+        };
+
+        const $ = (id) => document.getElementById(id);
+        const els = {
+          status: $("status"),
+          workspaceSelect: $("workspace-select"),
+          workspaceName: $("workspace-name"),
+          createWorkspace: $("create-workspace"),
+          refreshWorkspaces: $("refresh-workspaces"),
+          conversationSelect: $("conversation-select"),
+          createConversation: $("create-conversation"),
+          refreshConversations: $("refresh-conversations"),
+          messages: $("messages"),
+          form: $("agent-form"),
+          messageInput: $("message-input"),
+          agentMode: $("agent-mode"),
+          maxSteps: $("max-steps"),
+          sendButton: $("send-button"),
+          reloadMessages: $("reload-messages"),
+          metrics: $("metrics"),
+          steps: $("steps"),
+          sources: $("sources"),
+        };
+
+        function setStatus(message, tone = "") {
+          els.status.textContent = message;
+          els.status.dataset.tone = tone;
+        }
+
+        function formatError(detail) {
+          if (!detail) {
+            return "Request failed";
+          }
+          if (typeof detail === "string") {
+            return detail;
+          }
+          if (Array.isArray(detail)) {
+            return detail
+              .map((item) => item.msg || item.message || JSON.stringify(item))
+              .join("; ");
+          }
+          return detail.message || JSON.stringify(detail);
+        }
+
+        async function request(path, options = {}) {
+          const headers = options.body
+            ? { "Content-Type": "application/json", ...(options.headers || {}) }
+            : options.headers || {};
+          const response = await fetch(path, { ...options, headers });
+          if (!response.ok) {
+            let detail;
+            try {
+              detail = (await response.json()).detail;
+            } catch (error) {
+              detail = await response.text();
+            }
+            throw new Error(formatError(detail));
+          }
+          return response.status === 204 ? null : response.json();
+        }
+
+        function option(value, text) {
+          const node = document.createElement("option");
+          node.value = value;
+          node.textContent = text;
+          return node;
+        }
+
+        function clear(node) {
+          node.replaceChildren();
+        }
+
+        function jsonBlock(value) {
+          const pre = document.createElement("pre");
+          pre.textContent = JSON.stringify(value ?? {}, null, 2);
+          return pre;
+        }
+
+        function renderWorkspaces() {
+          clear(els.workspaceSelect);
+          if (state.workspaces.length === 0) {
+            els.workspaceSelect.append(option("", "No workspace"));
+            return;
+          }
+          state.workspaces.forEach((workspace) => {
+            els.workspaceSelect.append(option(workspace.id, workspace.name));
+          });
+          els.workspaceSelect.value = state.workspaceId;
+        }
+
+        function renderConversations() {
+          clear(els.conversationSelect);
+          if (state.conversations.length === 0) {
+            els.conversationSelect.append(option("", "No conversation"));
+            return;
+          }
+          state.conversations.forEach((conversation) => {
+            const title = conversation.title || conversation.id.slice(0, 8);
+            els.conversationSelect.append(option(conversation.id, title));
+          });
+          els.conversationSelect.value = state.conversationId;
+        }
+
+        async function loadWorkspaces(selectedId = state.workspaceId) {
+          state.workspaces = await request("/workspaces");
+          state.workspaceId =
+            selectedId && state.workspaces.some((item) => item.id === selectedId)
+              ? selectedId
+              : state.workspaces[0]?.id || "";
+          renderWorkspaces();
+          await loadConversations();
+        }
+
+        async function createWorkspace() {
+          const name = els.workspaceName.value.trim() || "Agent UI Workspace";
+          const workspace = await request("/workspaces", {
+            method: "POST",
+            body: JSON.stringify({ name }),
+          });
+          els.workspaceName.value = "";
+          await loadWorkspaces(workspace.id);
+          setStatus("Workspace ready", "ok");
+          return workspace;
+        }
+
+        async function loadConversations(selectedId = state.conversationId) {
+          state.conversations = state.workspaceId
+            ? await request(`/workspaces/${state.workspaceId}/conversations`)
+            : [];
+          state.conversationId =
+            selectedId &&
+            state.conversations.some((item) => item.id === selectedId)
+              ? selectedId
+              : state.conversations[0]?.id || "";
+          renderConversations();
+          await loadMessages();
+        }
+
+        async function createConversation() {
+          if (!state.workspaceId) {
+            await createWorkspace();
+          }
+          const conversation = await request(
+            `/workspaces/${state.workspaceId}/conversations`,
+            { method: "POST" },
+          );
+          await loadConversations(conversation.id);
+          setStatus("Conversation ready", "ok");
+          return conversation;
+        }
+
+        async function loadMessages() {
+          state.messages =
+            state.workspaceId && state.conversationId
+              ? await request(
+                  `/workspaces/${state.workspaceId}/conversations/${state.conversationId}/messages`,
+                )
+              : [];
+          renderMessages();
+        }
+
+        function renderMessages() {
+          clear(els.messages);
+          if (!state.workspaceId) {
+            const empty = document.createElement("div");
+            empty.className = "empty";
+            empty.textContent = "Create or select a workspace.";
+            els.messages.append(empty);
+            return;
+          }
+          if (!state.conversationId) {
+            const empty = document.createElement("div");
+            empty.className = "empty";
+            empty.textContent = "Create or select a conversation.";
+            els.messages.append(empty);
+            return;
+          }
+          if (state.messages.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "empty";
+            empty.textContent = "No messages yet.";
+            els.messages.append(empty);
+            return;
+          }
+          state.messages.forEach((message) => {
+            els.messages.append(renderMessage(message));
+          });
+          els.messages.scrollTop = els.messages.scrollHeight;
+        }
+
+        function renderMessage(message) {
+          const article = document.createElement("article");
+          article.className = `message ${message.role}`;
+
+          const meta = document.createElement("div");
+          meta.className = "message-meta";
+          const role = document.createElement("span");
+          role.textContent = message.role === "assistant" ? "Assistant" : "User";
+          const time = document.createElement("span");
+          time.textContent = new Date(message.created_at).toLocaleString();
+          meta.append(role, time);
+
+          const content = document.createElement("div");
+          content.className = "message-content";
+          content.textContent = message.content;
+
+          article.append(meta, content);
+
+          const invocationId = message.metrics?.agent_invocation_id;
+          if (message.role === "assistant" && invocationId) {
+            const sources = Array.isArray(message.sources) ? message.sources : [];
+            const actions = document.createElement("div");
+            actions.className = "message-actions";
+            const traceButton = document.createElement("button");
+            traceButton.className = "small-button";
+            traceButton.type = "button";
+            traceButton.textContent = "Trace";
+            traceButton.addEventListener("click", () => {
+              loadTrace(invocationId, article, sources);
+            });
+            actions.append(traceButton);
+            article.append(actions);
+          }
+
+          return article;
+        }
+
+        async function loadTrace(invocationId, article, sources = []) {
+          let trace = article.querySelector(".trace");
+          if (!trace) {
+            trace = document.createElement("div");
+            trace.className = "trace";
+            article.append(trace);
+          }
+          trace.textContent = "Loading trace";
+          try {
+            const invocation = await request(
+              `/workspaces/${state.workspaceId}/conversations/${state.conversationId}/agent-invocations/${invocationId}`,
+            );
+            trace.replaceChildren(renderTrace(invocation));
+            renderRun(invocationToRun(invocation, sources));
+            setStatus("Trace loaded", "ok");
+          } catch (error) {
+            trace.textContent = error.message;
+            setStatus(error.message, "error");
+          }
+        }
+
+        function invocationToRun(invocation, sources = []) {
+          return {
+            steps: invocation.steps,
+            sources: Array.isArray(sources) ? sources : [],
+            metrics: {
+              max_steps: invocation.max_steps,
+              llm_call_count: invocation.llm_call_count,
+              step_count: invocation.step_count,
+              tool_call_count: invocation.tool_call_count,
+              failed_step_count: invocation.failed_step_count,
+              source_count: invocation.source_count,
+              max_steps_reached: invocation.max_steps_reached,
+              total_latency_ms: invocation.total_latency_ms,
+            },
+          };
+        }
+
+        function renderTrace(invocation) {
+          const box = document.createElement("div");
+          const mode = document.createElement("div");
+          mode.className = "kv";
+          const modeLine = document.createElement("div");
+          const modeLabel = document.createElement("strong");
+          modeLabel.textContent = "Mode:";
+          modeLine.append(modeLabel, ` ${invocation.agent_mode}`);
+          mode.append(modeLine);
+          box.append(mode);
+          invocation.steps.forEach((step) => box.append(renderStep(step)));
+          if (invocation.steps.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "kv";
+            empty.textContent = "No tool steps.";
+            box.append(empty);
+          }
+          return box;
+        }
+
+        function renderRun(run) {
+          renderMetrics(run?.metrics || {});
+          renderSteps(run?.steps || []);
+          renderSources(run?.sources || []);
+        }
+
+        function renderMetrics(metrics) {
+          clear(els.metrics);
+          const items = [
+            ["LLM calls", metrics.llm_call_count],
+            ["Steps", metrics.step_count],
+            ["Tool calls", metrics.tool_call_count],
+            ["Failed", metrics.failed_step_count],
+            ["Sources", metrics.source_count],
+            ["Latency ms", metrics.total_latency_ms],
+            ["Max steps", metrics.max_steps],
+            ["Max reached", metrics.max_steps_reached ? "yes" : "no"],
+          ];
+          items.forEach(([label, value]) => {
+            const item = document.createElement("div");
+            item.className = "metric";
+            const metricValue = document.createElement("div");
+            metricValue.className = "metric-value";
+            metricValue.textContent = value ?? "-";
+            const metricLabel = document.createElement("div");
+            metricLabel.className = "metric-label";
+            metricLabel.textContent = label;
+            item.append(metricValue, metricLabel);
+            els.metrics.append(item);
+          });
+        }
+
+        function renderSteps(steps) {
+          clear(els.steps);
+          if (steps.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "kv";
+            empty.textContent = "No tool steps.";
+            els.steps.append(empty);
+            return;
+          }
+          steps.forEach((step) => els.steps.append(renderStep(step)));
+        }
+
+        function renderStep(step) {
+          const node = document.createElement("div");
+          node.className = "step";
+
+          const head = document.createElement("div");
+          head.className = "step-head";
+          const title = document.createElement("strong");
+          title.textContent = `Step ${step.step_index}`;
+          const statePill = document.createElement("span");
+          statePill.className = `pill ${step.ok ? "ok" : "fail"}`;
+          statePill.textContent = step.ok ? "ok" : step.error || "failed";
+          head.append(title, statePill);
+
+          const kv = document.createElement("div");
+          kv.className = "kv";
+          const action = document.createElement("div");
+          const actionLabel = document.createElement("strong");
+          actionLabel.textContent = "Action:";
+          action.append(actionLabel, ` ${step.action || "-"}`);
+          const observation = document.createElement("div");
+          const observationLabel = document.createElement("strong");
+          observationLabel.textContent = "Observation:";
+          observation.append(observationLabel, ` ${step.observation || "-"}`);
+          kv.append(action, observation);
+
+          const details = document.createElement("details");
+          const summary = document.createElement("summary");
+          summary.textContent = "Payload";
+          details.append(summary);
+          details.append(jsonBlock({
+            action_input: step.action_input,
+            tool_result: step.tool_result,
+            llm_output: step.llm_output,
+          }));
+
+          node.append(head, kv, details);
+          return node;
+        }
+
+        function renderSources(sources) {
+          clear(els.sources);
+          if (sources.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "kv";
+            empty.textContent = "No sources.";
+            els.sources.append(empty);
+            return;
+          }
+          sources.forEach((source) => {
+            const node = document.createElement("div");
+            node.className = "source";
+            const title = document.createElement("div");
+            title.className = "source-title";
+            const name = document.createElement("span");
+            name.textContent = source.original_filename;
+            const score = document.createElement("span");
+            score.textContent =
+              typeof source.score === "number"
+                ? source.score.toFixed(3)
+                : String(source.score ?? "-");
+            title.append(name, score);
+            const text = document.createElement("div");
+            text.className = "source-text";
+            text.textContent = source.text;
+            node.append(title, text);
+            els.sources.append(node);
+          });
+        }
+
+        async function ensureWorkspaceAndConversation() {
+          if (!state.workspaceId) {
+            await createWorkspace();
+          }
+          if (!state.conversationId) {
+            await createConversation();
+          }
+        }
+
+        function setBusy(value) {
+          state.busy = value;
+          els.sendButton.disabled = value;
+          els.createWorkspace.disabled = value;
+          els.createConversation.disabled = value;
+        }
+
+        async function sendAgentMessage(event) {
+          event.preventDefault();
+          const message = els.messageInput.value.trim();
+          if (!message || state.busy) {
+            return;
+          }
+          setBusy(true);
+          setStatus("Running agent");
+          try {
+            await ensureWorkspaceAndConversation();
+            const maxSteps = Number.parseInt(els.maxSteps.value, 10) || 5;
+            const payload = {
+              message,
+              max_steps: maxSteps,
+              agent_mode: els.agentMode.value,
+            };
+            const run = await request(
+              `/workspaces/${state.workspaceId}/conversations/${state.conversationId}/agent`,
+              {
+                method: "POST",
+                body: JSON.stringify(payload),
+              },
+            );
+            els.messageInput.value = "";
+            renderRun(run);
+            await loadMessages();
+            await loadConversations(state.conversationId);
+            setStatus("Agent run completed", "ok");
+          } catch (error) {
+            setStatus(error.message, "error");
+          } finally {
+            setBusy(false);
+          }
+        }
+
+        els.refreshWorkspaces.addEventListener("click", () => {
+          loadWorkspaces().catch((error) => setStatus(error.message, "error"));
+        });
+        els.createWorkspace.addEventListener("click", () => {
+          createWorkspace().catch((error) => setStatus(error.message, "error"));
+        });
+        els.workspaceSelect.addEventListener("change", async (event) => {
+          state.workspaceId = event.target.value;
+          await loadConversations();
+        });
+        els.refreshConversations.addEventListener("click", () => {
+          loadConversations().catch((error) => setStatus(error.message, "error"));
+        });
+        els.createConversation.addEventListener("click", () => {
+          createConversation().catch((error) => setStatus(error.message, "error"));
+        });
+        els.conversationSelect.addEventListener("change", async (event) => {
+          state.conversationId = event.target.value;
+          await loadMessages();
+        });
+        els.reloadMessages.addEventListener("click", () => {
+          loadMessages().catch((error) => setStatus(error.message, "error"));
+        });
+        els.form.addEventListener("submit", sendAgentMessage);
+
+        renderRun({ metrics: {}, steps: [], sources: [] });
+        loadWorkspaces()
+          .then(() => setStatus("Ready", "ok"))
+          .catch((error) => setStatus(error.message, "error"));
+      })();
+    </script>
+  </body>
+</html>
