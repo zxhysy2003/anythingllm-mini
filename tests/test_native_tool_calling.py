@@ -8,6 +8,7 @@ from app.core.llm import DeepSeekToolCall, DeepSeekToolCallResult
 from app.core.native_tool_calling import DeepSeekNativeToolCallingExecutor
 from app.tools.calculator import CalculatorTool
 from app.tools.registry import ToolContext, ToolRegistry, ToolResult
+from tests.fakes import CollectingEventEmitter
 
 
 class ScriptedToolCallingClient:
@@ -134,6 +135,40 @@ def test_native_executor_calls_calculator_then_returns_final_answer():
     }
 
 
+def test_native_executor_emits_tool_events():
+    emitter = CollectingEventEmitter()
+    client = ScriptedToolCallingClient(
+        [
+            tool_result(
+                "",
+                tool_calls=[tool_call("calculator", '{"expression": "1 + 2"}')],
+                finish_reason="tool_calls",
+            ),
+            tool_result("the result is 3"),
+        ]
+    )
+    executor = DeepSeekNativeToolCallingExecutor(
+        llm=client,
+        tool_registry=make_registry(CalculatorTool()),
+    )
+
+    result = asyncio.run(
+        executor.run("calculate", ToolContext(), event_emitter=emitter)
+    )
+
+    assert result.answer == "the result is 3"
+    assert [event["type"] for event in emitter.events] == [
+        "llm_started",
+        "llm_finished",
+        "tool_started",
+        "tool_finished",
+        "llm_started",
+        "llm_finished",
+    ]
+    assert emitter.events[2]["payload"]["tool_name"] == "calculator"
+    assert emitter.events[3]["payload"]["step"]["observation"] == "3"
+
+
 def test_native_executor_passes_tool_context_to_tools():
     tool = CaptureContextTool()
     client = ScriptedToolCallingClient(
@@ -244,3 +279,32 @@ def test_native_executor_stops_after_max_steps():
     assert result.llm_call_count == 1
     assert len(result.steps) == 1
     assert result.agent_mode == AGENT_MODE_NATIVE_TOOL_CALLING
+
+
+def test_native_executor_emits_max_steps_reached_event():
+    emitter = CollectingEventEmitter()
+    client = ScriptedToolCallingClient(
+        [
+            tool_result(
+                "",
+                tool_calls=[tool_call("calculator", '{"expression": "1 + 1"}')],
+                finish_reason="tool_calls",
+            )
+        ]
+    )
+    executor = DeepSeekNativeToolCallingExecutor(
+        llm=client,
+        tool_registry=make_registry(CalculatorTool()),
+    )
+
+    result = asyncio.run(
+        executor.run(
+            "calculate",
+            ToolContext(),
+            max_steps=1,
+            event_emitter=emitter,
+        )
+    )
+
+    assert result.max_steps_reached is True
+    assert emitter.events[-1]["type"] == "max_steps_reached"

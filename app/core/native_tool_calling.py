@@ -2,6 +2,7 @@ import json
 from collections.abc import Sequence
 from typing import Any, Mapping, Protocol
 
+from app.core.agent_events import AgentEventEmitter, emit_agent_event
 from app.core.agent_executor import (
     DEFAULT_AGENT_STEPS,
     MAX_AGENT_STEPS,
@@ -48,6 +49,7 @@ class DeepSeekNativeToolCallingExecutor:
         history: Sequence[ChatMessage] | None = None,
         temperature: float | None = None,
         max_steps: int = DEFAULT_AGENT_STEPS,
+        event_emitter: AgentEventEmitter | None = None,
     ) -> AgentRunResult:
         normalized_message = message.strip()
         if not normalized_message:
@@ -66,6 +68,11 @@ class DeepSeekNativeToolCallingExecutor:
         model = None
 
         for call_index in range(1, max_steps + 1):
+            await emit_agent_event(
+                event_emitter,
+                "llm_started",
+                {"call_index": call_index, "agent_mode": self.agent_mode},
+            )
             llm_result = await self.llm.chat_with_tools(
                 messages=messages,
                 tools=tools,
@@ -74,6 +81,17 @@ class DeepSeekNativeToolCallingExecutor:
             )
             provider = llm_result.provider
             model = llm_result.model
+            await emit_agent_event(
+                event_emitter,
+                "llm_finished",
+                {
+                    "call_index": call_index,
+                    "agent_mode": self.agent_mode,
+                    "provider": provider,
+                    "model": model,
+                    "tool_call_count": len(llm_result.tool_calls),
+                },
+            )
 
             if not llm_result.tool_calls:
                 return AgentRunResult(
@@ -89,12 +107,28 @@ class DeepSeekNativeToolCallingExecutor:
 
             messages.append(self._assistant_tool_call_message(llm_result))
             for tool_call in llm_result.tool_calls:
+                step_index = len(steps) + 1
+                await emit_agent_event(
+                    event_emitter,
+                    "tool_started",
+                    {
+                        "step_index": step_index,
+                        "tool_call_id": tool_call.id,
+                        "tool_name": tool_call.name,
+                        "arguments": tool_call.arguments,
+                    },
+                )
                 step, observation = await self._run_tool_call(
-                    step_index=len(steps) + 1,
+                    step_index=step_index,
                     tool_call=tool_call,
                     context=context,
                 )
                 steps.append(step)
+                await emit_agent_event(
+                    event_emitter,
+                    "tool_finished",
+                    {"step": step.model_dump(mode="json")},
+                )
                 messages.append(
                     {
                         "role": "tool",
@@ -103,6 +137,15 @@ class DeepSeekNativeToolCallingExecutor:
                     }
                 )
 
+        await emit_agent_event(
+            event_emitter,
+            "max_steps_reached",
+            {
+                "agent_mode": self.agent_mode,
+                "max_steps": max_steps,
+                "step_count": len(steps),
+            },
+        )
         return AgentRunResult(
             message=normalized_message,
             answer=MAX_STEPS_ANSWER,

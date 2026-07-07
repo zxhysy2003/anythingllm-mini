@@ -4,6 +4,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
+from app.core.agent_events import AgentEventEmitter, emit_agent_event
 from app.core.agent_executor import (
     DEFAULT_AGENT_STEPS,
     MAX_AGENT_STEPS,
@@ -133,6 +134,7 @@ class ReactTextAgentExecutor:
         history: Sequence[ChatMessage] | None = None,
         temperature: float | None = None,
         max_steps: int = DEFAULT_AGENT_STEPS,
+        event_emitter: AgentEventEmitter | None = None,
     ) -> AgentRunResult:
         normalized_message = message.strip()
         if not normalized_message:
@@ -149,6 +151,11 @@ class ReactTextAgentExecutor:
         model = None
 
         for step_index in range(1, max_steps + 1):
+            await emit_agent_event(
+                event_emitter,
+                "llm_started",
+                {"step_index": step_index, "agent_mode": self.agent_mode},
+            )
             llm_result = await self.llm.chat(
                 message=self._build_agent_message(normalized_message, steps),
                 system_prompt=agent_system_prompt,
@@ -158,6 +165,16 @@ class ReactTextAgentExecutor:
             llm_output = self._extract_answer(llm_result)
             provider = self._extract_optional_text(llm_result, "provider")
             model = self._extract_optional_text(llm_result, "model")
+            await emit_agent_event(
+                event_emitter,
+                "llm_finished",
+                {
+                    "step_index": step_index,
+                    "agent_mode": self.agent_mode,
+                    "provider": provider,
+                    "model": model,
+                },
+            )
 
             parsed = parse_agent_output(llm_output)
             if parsed.is_final:
@@ -173,35 +190,65 @@ class ReactTextAgentExecutor:
                 )
 
             if parsed.error is not None:
-                steps.append(
-                    AgentStep(
-                        step_index=step_index,
-                        llm_output=llm_output,
-                        observation=f"Agent output parse error: {parsed.error}",
-                        ok=False,
-                        error=parsed.error,
-                    )
+                step = AgentStep(
+                    step_index=step_index,
+                    llm_output=llm_output,
+                    observation=f"Agent output parse error: {parsed.error}",
+                    ok=False,
+                    error=parsed.error,
+                )
+                steps.append(step)
+                await emit_agent_event(
+                    event_emitter,
+                    "parse_error",
+                    {
+                        "step_index": step_index,
+                        "error": parsed.error,
+                        "observation": step.observation,
+                    },
                 )
                 continue
 
+            await emit_agent_event(
+                event_emitter,
+                "tool_started",
+                {
+                    "step_index": step_index,
+                    "tool_name": parsed.action,
+                    "action_input": parsed.action_input,
+                },
+            )
             tool_result = await self.tool_registry.run(
                 parsed.action or "",
                 parsed.action_input,
                 context,
             )
-            steps.append(
-                AgentStep(
-                    step_index=step_index,
-                    llm_output=llm_output,
-                    action=parsed.action,
-                    action_input=parsed.action_input,
-                    observation=tool_result.content,
-                    ok=tool_result.ok,
-                    error=tool_result.error,
-                    tool_result=tool_result,
-                )
+            step = AgentStep(
+                step_index=step_index,
+                llm_output=llm_output,
+                action=parsed.action,
+                action_input=parsed.action_input,
+                observation=tool_result.content,
+                ok=tool_result.ok,
+                error=tool_result.error,
+                tool_result=tool_result,
+            )
+            steps.append(step)
+            await emit_agent_event(
+                event_emitter,
+                "tool_finished",
+                {"step": step.model_dump(mode="json")},
             )
 
+        await emit_agent_event(
+            event_emitter,
+            "max_steps_reached",
+            {
+                "agent_mode": self.agent_mode,
+                "max_steps": max_steps,
+                "step_count": len(steps),
+            },
+        )
         return AgentRunResult(
             message=normalized_message,
             answer=MAX_STEPS_ANSWER,

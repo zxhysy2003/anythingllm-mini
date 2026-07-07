@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -74,6 +76,22 @@ def native_tool_call(name, arguments, *, call_id="call-1"):
         name=name,
         arguments=arguments,
     )
+
+
+def parse_sse_events(text: str) -> list[dict]:
+    events = []
+    for block in text.strip().split("\n\n"):
+        if not block:
+            continue
+        event_name = None
+        data = None
+        for line in block.splitlines():
+            if line.startswith("event: "):
+                event_name = line.removeprefix("event: ")
+            if line.startswith("data: "):
+                data = json.loads(line.removeprefix("data: "))
+        events.append({"event": event_name, "data": data})
+    return events
 
 
 @pytest.fixture
@@ -194,6 +212,41 @@ def test_agent_endpoint_runs_agent_loop(agent_api):
     assert invocation["steps"] == payload["steps"]
 
 
+def test_agent_stream_endpoint_streams_agent_events(agent_api):
+    client, _ = agent_api(
+        [
+            'Action: calculator\nAction Input: {"expression": "1 + 2 * 3"}',
+            "Final Answer: the result is 7",
+        ]
+    )
+    workspace = create_workspace(client, system_prompt="Answer through tools.")
+    conversation = create_conversation(client, workspace["id"])
+
+    with client.stream(
+        "POST",
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}"
+        "/agent/stream",
+        json={"message": "calculate", "max_steps": 5},
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = parse_sse_events(body)
+    event_names = [event["event"] for event in events]
+    assert event_names[0] == "agent_started"
+    assert "tool_finished" in event_names
+    assert event_names[-1] == "agent_finished"
+
+    finished = events[-1]["data"]
+    assert finished["type"] == "agent_finished"
+    payload = finished["payload"]
+    assert payload["answer"] == "the result is 7"
+    assert payload["agent_invocation_id"]
+    assert payload["steps"][0]["action"] == "calculator"
+    assert payload["metrics"]["tool_call_count"] == 1
+
+
 def test_agent_endpoint_runs_native_tool_calling_mode(agent_api):
     registry = ToolRegistry()
     registry.register(CalculatorTool())
@@ -280,6 +333,27 @@ def test_agent_endpoint_validates_agent_mode(agent_api):
     response = client.post(
         f"/workspaces/{workspace['id']}/conversations/{conversation['id']}/agent",
         json={"message": "hello", "agent_mode": "missing_mode"},
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"message": "hello", "max_steps": 0},
+        {"message": "hello", "agent_mode": "missing_mode"},
+    ],
+)
+def test_agent_stream_endpoint_uses_request_validation(agent_api, payload):
+    client, _ = agent_api(["Final Answer: unused"])
+    workspace = create_workspace(client)
+    conversation = create_conversation(client, workspace["id"])
+
+    response = client.post(
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}"
+        "/agent/stream",
+        json=payload,
     )
 
     assert response.status_code == 422
@@ -404,6 +478,12 @@ def test_agent_openapi_route_documents_agent_endpoint():
     assert "default mode is ReAct text" in operation["description"]
     assert "DeepSeek native tool calling" in operation["description"]
     assert "separate agent invocation record" in operation["description"]
+
+    stream_operation = schema["paths"][
+        "/workspaces/{workspace_id}/conversations/{conversation_id}/agent/stream"
+    ]["post"]
+    assert stream_operation["summary"] == "Stream workspace agent events"
+    assert "not token-by-token answer text" in stream_operation["description"]
 
     invocation_operation = schema["paths"][
         "/workspaces/{workspace_id}/conversations/{conversation_id}"

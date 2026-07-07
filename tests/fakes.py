@@ -10,6 +10,14 @@ from app.services.document_service import (
 from app.services.rag_service import IndexedDocument, RAGContextBuildResult, RAGSource
 
 
+class CollectingEventEmitter:
+    def __init__(self):
+        self.events = []
+
+    async def emit(self, event_type, payload=None):
+        self.events.append({"type": event_type, "payload": payload or {}})
+
+
 class FakeRAGService:
     def __init__(
         self,

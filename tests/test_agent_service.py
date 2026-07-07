@@ -34,7 +34,7 @@ from app.services.workspace_service import WorkspaceService
 from app.tools.calculator import CalculatorTool
 from app.tools.document_tools import WorkspaceDocumentSearchTool
 from app.tools.registry import ToolRegistry, ToolResult
-from tests.fakes import FakeChatService, FakeRAGService
+from tests.fakes import CollectingEventEmitter, FakeChatService, FakeRAGService
 
 
 class ScriptedAgentChat:
@@ -74,6 +74,7 @@ class FixedModeExecutor:
         history,
         temperature,
         max_steps,
+        event_emitter=None,
     ):
         self.max_steps = max_steps
         return AgentRunResult(
@@ -368,6 +369,38 @@ def test_agent_service_calls_calculator_then_returns_final_answer(session):
     assert invocation.steps == result.steps
 
 
+def test_agent_service_emits_started_and_finished_events(session):
+    emitter = CollectingEventEmitter()
+    agent_service, _, _, workspace, conversation = make_services(
+        session,
+        [
+            'Action: calculator\nAction Input: {"expression": "1 + 2"}',
+            "Final Answer: the result is 3",
+        ],
+    )
+
+    result = asyncio.run(
+        agent_service.run_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "calculate",
+            event_emitter=emitter,
+        )
+    )
+
+    event_types = [event["type"] for event in emitter.events]
+    assert event_types[0] == "agent_started"
+    assert event_types[-1] == "agent_finished"
+    assert "tool_finished" in event_types
+    assert emitter.events[0]["payload"]["workspace_id"] == workspace.id
+    assert (
+        emitter.events[-1]["payload"]["agent_invocation_id"]
+        == result.agent_invocation_id
+    )
+    assert emitter.events[-1]["payload"]["answer"] == "the result is 3"
+
+
 def test_agent_service_get_invocation_rejects_wrong_conversation(session):
     agent_service, workspace_service, _, workspace, conversation = make_services(
         session,
@@ -589,6 +622,38 @@ def test_agent_service_rolls_back_when_saving_exchange_fails(session, monkeypatc
     assert list_message_count(session) == 0
     assert list_invocations(session) == []
     assert list_steps(session) == []
+
+
+def test_agent_service_emits_failed_event_when_saving_exchange_fails(
+    session,
+    monkeypatch,
+):
+    emitter = CollectingEventEmitter()
+    agent_service, _, _, workspace, conversation = make_services(
+        session,
+        ["Final Answer: no tool needed"],
+        registry=make_registry(),
+    )
+
+    def broken_commit():
+        from sqlalchemy.exc import SQLAlchemyError
+
+        raise SQLAlchemyError("write failed")
+
+    monkeypatch.setattr(session, "commit", broken_commit)
+    with pytest.raises(WorkspacePersistenceError):
+        asyncio.run(
+            agent_service.run_in_conversation(
+                session,
+                workspace.id,
+                conversation.id,
+                "hello",
+                event_emitter=emitter,
+            )
+        )
+
+    assert emitter.events[-1]["type"] == "agent_failed"
+    assert emitter.events[-1]["payload"]["error_type"] == "WorkspacePersistenceError"
 
 
 def test_agent_service_raises_for_missing_workspace(session):

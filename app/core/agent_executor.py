@@ -3,6 +3,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
+from app.core.agent_events import AgentEventEmitter
 from app.core.llm import DEFAULT_SYSTEM_PROMPT, ChatMessage
 from app.tools.registry import ToolContext, ToolResult
 
@@ -44,4 +45,5 @@ class AgentExecutor(Protocol):
         history: Sequence[ChatMessage] | None = None,
         temperature: float | None = None,
         max_steps: int = DEFAULT_AGENT_STEPS,
+        event_emitter: AgentEventEmitter | None = None,
     ) -> AgentRunResult: ...

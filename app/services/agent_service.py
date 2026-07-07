@@ -6,6 +6,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
+from app.core.agent_events import AgentEventEmitter, emit_agent_event
 from app.core.agent_executor import (
     DEFAULT_AGENT_STEPS,
     AgentExecutor,
@@ -144,68 +145,97 @@ class AgentService:
         *,
         max_steps: int = DEFAULT_AGENT_STEPS,
         agent_mode: str = AGENT_MODE_REACT_TEXT,
+        event_emitter: AgentEventEmitter | None = None,
     ) -> WorkspaceAgentResult:
-        started_at = perf_counter()
-        invocation_started_at = utc_now()
-        agent_executor = self._agent_executor(agent_mode)
-        context = self.workspace.prepare_workspace_conversation_context(
-            session,
-            workspace_id,
-            conversation_id,
-            message,
-        )
-        agent_result = await agent_executor.run(
-            message=context.message,
-            context=ToolContext(
-                workspace_id=context.workspace.id,
+        try:
+            started_at = perf_counter()
+            invocation_started_at = utc_now()
+            agent_executor = self._agent_executor(agent_mode)
+            context = self.workspace.prepare_workspace_conversation_context(
+                session,
+                workspace_id,
+                conversation_id,
+                message,
+            )
+            await emit_agent_event(
+                event_emitter,
+                "agent_started",
+                {
+                    "workspace_id": context.workspace.id,
+                    "conversation_id": context.conversation.id,
+                    "agent_mode": agent_mode,
+                    "max_steps": max_steps,
+                },
+            )
+            agent_result = await agent_executor.run(
+                message=context.message,
+                context=ToolContext(
+                    workspace_id=context.workspace.id,
+                    conversation_id=context.conversation.id,
+                ),
+                system_prompt=self._agent_system_prompt(
+                    context.workspace.system_prompt,
+                    context.workspace.chat_mode,
+                ),
+                history=context.history,
+                temperature=context.workspace.temperature,
+                max_steps=max_steps,
+                event_emitter=event_emitter,
+            )
+            sources = self._extract_sources(agent_result.steps)
+            invocation_ended_at = utc_now()
+            metrics = WorkspaceAgentMetrics(
+                max_steps=max_steps,
+                llm_call_count=agent_result.llm_call_count,
+                step_count=len(agent_result.steps),
+                tool_call_count=sum(1 for step in agent_result.steps if step.action),
+                failed_step_count=sum(1 for step in agent_result.steps if not step.ok),
+                source_count=len(sources),
+                max_steps_reached=agent_result.max_steps_reached,
+                total_latency_ms=self._elapsed_ms(started_at),
+            )
+            agent_invocation_id = self._save_exchange(
+                session,
+                context.workspace.id,
+                context.conversation,
+                context.message,
+                agent_result.answer,
+                sources,
+                agent_result.provider,
+                agent_result.model,
+                metrics,
+                agent_result.steps,
+                agent_result.agent_mode,
+                invocation_started_at,
+                invocation_ended_at,
+            )
+            result = WorkspaceAgentResult(
                 conversation_id=context.conversation.id,
-            ),
-            system_prompt=self._agent_system_prompt(
-                context.workspace.system_prompt,
-                context.workspace.chat_mode,
-            ),
-            history=context.history,
-            temperature=context.workspace.temperature,
-            max_steps=max_steps,
-        )
-        sources = self._extract_sources(agent_result.steps)
-        invocation_ended_at = utc_now()
-        metrics = WorkspaceAgentMetrics(
-            max_steps=max_steps,
-            llm_call_count=agent_result.llm_call_count,
-            step_count=len(agent_result.steps),
-            tool_call_count=sum(1 for step in agent_result.steps if step.action),
-            failed_step_count=sum(1 for step in agent_result.steps if not step.ok),
-            source_count=len(sources),
-            max_steps_reached=agent_result.max_steps_reached,
-            total_latency_ms=self._elapsed_ms(started_at),
-        )
-        agent_invocation_id = self._save_exchange(
-            session,
-            context.workspace.id,
-            context.conversation,
-            context.message,
-            agent_result.answer,
-            sources,
-            agent_result.provider,
-            agent_result.model,
-            metrics,
-            agent_result.steps,
-            agent_result.agent_mode,
-            invocation_started_at,
-            invocation_ended_at,
-        )
-        return WorkspaceAgentResult(
-            conversation_id=context.conversation.id,
-            agent_invocation_id=agent_invocation_id,
-            message=context.message,
-            answer=agent_result.answer,
-            steps=agent_result.steps,
-            sources=sources,
-            provider=agent_result.provider,
-            model=agent_result.model,
-            metrics=metrics,
-        )
+                agent_invocation_id=agent_invocation_id,
+                message=context.message,
+                answer=agent_result.answer,
+                steps=agent_result.steps,
+                sources=sources,
+                provider=agent_result.provider,
+                model=agent_result.model,
+                metrics=metrics,
+            )
+            await emit_agent_event(
+                event_emitter,
+                "agent_finished",
+                result.model_dump(mode="json"),
+            )
+            return result
+        except Exception as exc:
+            await emit_agent_event(
+                event_emitter,
+                "agent_failed",
+                {
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            raise
 
     def get_invocation(
         self,

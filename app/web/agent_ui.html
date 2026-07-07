@@ -338,6 +338,7 @@
         font-size: 12px;
       }
 
+      .event,
       .step,
       .source {
         border: 1px solid var(--line);
@@ -346,11 +347,13 @@
         padding: 10px;
       }
 
+      .event + .event,
       .step + .step,
       .source + .source {
         margin-top: 8px;
       }
 
+      .event-head,
       .step-head {
         display: flex;
         align-items: center;
@@ -552,6 +555,10 @@
             <div class="metric-grid" id="metrics"></div>
           </section>
           <section class="section">
+            <div class="section-title">Live timeline</div>
+            <div id="events"></div>
+          </section>
+          <section class="section">
             <div class="section-title">Steps</div>
             <div id="steps"></div>
           </section>
@@ -571,6 +578,7 @@
           conversations: [],
           conversationId: "",
           messages: [],
+          events: [],
           busy: false,
         };
 
@@ -592,6 +600,7 @@
           sendButton: $("send-button"),
           reloadMessages: $("reload-messages"),
           metrics: $("metrics"),
+          events: $("events"),
           steps: $("steps"),
           sources: $("sources"),
         };
@@ -631,6 +640,68 @@
             throw new Error(formatError(detail));
           }
           return response.status === 204 ? null : response.json();
+        }
+
+        async function requestEventStream(path, options = {}, onEvent) {
+          const headers = {
+            "Content-Type": "application/json",
+            ...(options.headers || {}),
+          };
+          const response = await fetch(path, { ...options, headers });
+          if (!response.ok) {
+            let detail;
+            try {
+              detail = (await response.json()).detail;
+            } catch (error) {
+              detail = await response.text();
+            }
+            throw new Error(formatError(detail));
+          }
+          if (!response.body) {
+            throw new Error("Streaming response body is not available.");
+          }
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) {
+              break;
+            }
+            buffer += decoder.decode(value, { stream: true });
+            buffer = drainSseBuffer(buffer, onEvent);
+          }
+          buffer += decoder.decode();
+          drainSseBuffer(`${buffer}\n\n`, onEvent);
+        }
+
+        function drainSseBuffer(buffer, onEvent) {
+          let cursor = buffer.indexOf("\n\n");
+          while (cursor !== -1) {
+            const block = buffer.slice(0, cursor);
+            buffer = buffer.slice(cursor + 2);
+            const event = parseSseBlock(block);
+            if (event) {
+              onEvent(event);
+            }
+            cursor = buffer.indexOf("\n\n");
+          }
+          return buffer;
+        }
+
+        function parseSseBlock(block) {
+          const lines = block.split(/\r?\n/);
+          const dataLines = [];
+          for (const line of lines) {
+            if (line.startsWith("data:")) {
+              dataLines.push(line.slice(5).trimStart());
+            }
+          }
+          if (dataLines.length === 0) {
+            return null;
+          }
+          return JSON.parse(dataLines.join("\n"));
         }
 
         function option(value, text) {
@@ -863,6 +934,87 @@
           renderSources(run?.sources || []);
         }
 
+        function renderEvents(events = state.events) {
+          clear(els.events);
+          if (events.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "kv";
+            empty.textContent = "No live events.";
+            els.events.append(empty);
+            return;
+          }
+          events.forEach((event) => els.events.append(renderEvent(event)));
+        }
+
+        function appendAgentEvent(event) {
+          state.events.push(event);
+          renderEvents();
+        }
+
+        function renderEvent(event) {
+          const node = document.createElement("div");
+          node.className = "event";
+
+          const head = document.createElement("div");
+          head.className = "event-head";
+          const title = document.createElement("strong");
+          title.textContent = event.type;
+          const sequence = document.createElement("span");
+          sequence.className = event.type === "agent_failed" ? "pill fail" : "pill";
+          sequence.textContent = `#${event.sequence}`;
+          head.append(title, sequence);
+
+          const kv = document.createElement("div");
+          kv.className = "kv";
+          const summary = document.createElement("div");
+          const label = document.createElement("strong");
+          label.textContent = "Summary:";
+          summary.append(label, ` ${eventSummary(event)}`);
+          kv.append(summary);
+
+          const details = document.createElement("details");
+          const detailSummary = document.createElement("summary");
+          detailSummary.textContent = "Payload";
+          details.append(detailSummary);
+          details.append(jsonBlock(event.payload || {}));
+
+          node.append(head, kv, details);
+          return node;
+        }
+
+        function eventSummary(event) {
+          const payload = event.payload || {};
+          if (event.type === "agent_started") {
+            return `${payload.agent_mode || "-"} with max ${payload.max_steps || "-"} steps`;
+          }
+          if (event.type === "llm_started") {
+            return `LLM call ${payload.step_index || payload.call_index || "-"}`;
+          }
+          if (event.type === "llm_finished") {
+            return `${payload.provider || "-"} / ${payload.model || "-"}`;
+          }
+          if (event.type === "tool_started") {
+            return `Calling ${payload.tool_name || "-"}`;
+          }
+          if (event.type === "tool_finished") {
+            const step = payload.step || {};
+            return `${step.action || "-"} ${step.ok ? "completed" : step.error || "failed"}`;
+          }
+          if (event.type === "parse_error") {
+            return payload.error || "parse error";
+          }
+          if (event.type === "max_steps_reached") {
+            return `Stopped after ${payload.max_steps || "-"} steps`;
+          }
+          if (event.type === "agent_finished") {
+            return "Final answer saved";
+          }
+          if (event.type === "agent_failed") {
+            return payload.error || "Agent failed";
+          }
+          return "-";
+        }
+
         function renderMetrics(metrics) {
           clear(els.metrics);
           const items = [
@@ -994,6 +1146,9 @@
           }
           setBusy(true);
           setStatus("Running agent");
+          state.events = [];
+          renderEvents();
+          renderRun({ metrics: {}, steps: [], sources: [] });
           try {
             await ensureWorkspaceAndConversation();
             const maxSteps = Number.parseInt(els.maxSteps.value, 10) || 5;
@@ -1002,15 +1157,34 @@
               max_steps: maxSteps,
               agent_mode: els.agentMode.value,
             };
-            const run = await request(
-              `/workspaces/${state.workspaceId}/conversations/${state.conversationId}/agent`,
+            let finalRun = null;
+            let failure = null;
+            await requestEventStream(
+              `/workspaces/${state.workspaceId}/conversations/${state.conversationId}/agent/stream`,
               {
                 method: "POST",
                 body: JSON.stringify(payload),
               },
+              (streamEvent) => {
+                appendAgentEvent(streamEvent);
+                if (streamEvent.type === "agent_finished") {
+                  finalRun = streamEvent.payload;
+                  renderRun(finalRun);
+                  setStatus("Agent run completed", "ok");
+                }
+                if (streamEvent.type === "agent_failed") {
+                  failure = streamEvent.payload?.error || "Agent run failed";
+                  setStatus(failure, "error");
+                }
+              },
             );
+            if (failure) {
+              throw new Error(failure);
+            }
+            if (!finalRun) {
+              throw new Error("Agent stream ended without a final result.");
+            }
             els.messageInput.value = "";
-            renderRun(run);
             await loadMessages();
             await loadConversations(state.conversationId);
             setStatus("Agent run completed", "ok");
@@ -1047,6 +1221,7 @@
         els.form.addEventListener("submit", sendAgentMessage);
 
         renderRun({ metrics: {}, steps: [], sources: [] });
+        renderEvents();
         loadWorkspaces()
           .then(() => setStatus("Ready", "ok"))
           .catch((error) => setStatus(error.message, "error"));

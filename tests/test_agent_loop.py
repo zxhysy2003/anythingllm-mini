@@ -12,6 +12,7 @@ from app.core.agent_loop import (
 )
 from app.tools.calculator import CalculatorTool
 from app.tools.registry import ToolContext, ToolRegistry, ToolResult
+from tests.fakes import CollectingEventEmitter
 
 
 class FakeLLMResult:
@@ -178,6 +179,40 @@ def test_agent_calls_calculator_then_returns_final_answer():
     assert result.agent_mode == AGENT_MODE_REACT_TEXT
 
 
+def test_agent_emits_llm_and_tool_events():
+    emitter = CollectingEventEmitter()
+    executor = ReactTextAgentExecutor(
+        llm=FakeLLM(
+            [
+                'Action: calculator\nAction Input: {"expression": "1 + 2"}',
+                "Final Answer: the result is 3",
+            ]
+        ),
+        tool_registry=make_registry(CalculatorTool()),
+    )
+
+    result = asyncio.run(
+        executor.run(
+            "calculate",
+            ToolContext(),
+            system_prompt="system",
+            event_emitter=emitter,
+        )
+    )
+
+    assert result.answer == "the result is 3"
+    assert [event["type"] for event in emitter.events] == [
+        "llm_started",
+        "llm_finished",
+        "tool_started",
+        "tool_finished",
+        "llm_started",
+        "llm_finished",
+    ]
+    assert emitter.events[2]["payload"]["tool_name"] == "calculator"
+    assert emitter.events[3]["payload"]["step"]["observation"] == "3"
+
+
 def test_agent_records_invalid_tool_input_and_allows_final_answer():
     registry = make_registry(CalculatorTool())
     result = run_agent(
@@ -245,6 +280,28 @@ def test_agent_records_parse_error_and_allows_final_answer():
     assert result.agent_mode == AGENT_MODE_REACT_TEXT
 
 
+def test_agent_emits_parse_error_event():
+    emitter = CollectingEventEmitter()
+    executor = ReactTextAgentExecutor(
+        llm=FakeLLM(["Action: calculator", "Final Answer: fixed"]),
+        tool_registry=make_registry(CalculatorTool()),
+    )
+
+    asyncio.run(
+        executor.run(
+            "calculate",
+            ToolContext(),
+            system_prompt="system",
+            max_steps=2,
+            event_emitter=emitter,
+        )
+    )
+
+    parse_events = [event for event in emitter.events if event["type"] == "parse_error"]
+    assert len(parse_events) == 1
+    assert parse_events[0]["payload"]["error"] == "missing_action_input"
+
+
 def test_agent_stops_after_max_steps():
     registry = make_registry(CalculatorTool())
     result = run_agent(
@@ -261,6 +318,27 @@ def test_agent_stops_after_max_steps():
     assert result.llm_call_count == 2
     assert len(result.steps) == 2
     assert result.agent_mode == AGENT_MODE_REACT_TEXT
+
+
+def test_agent_emits_max_steps_reached_event():
+    emitter = CollectingEventEmitter()
+    executor = ReactTextAgentExecutor(
+        llm=FakeLLM(['Action: calculator\nAction Input: {"expression": "1 + 1"}']),
+        tool_registry=make_registry(CalculatorTool()),
+    )
+    result = asyncio.run(
+        executor.run(
+            "calculate",
+            ToolContext(),
+            system_prompt="system",
+            max_steps=1,
+            event_emitter=emitter,
+        )
+    )
+
+    assert result.max_steps_reached is True
+    assert emitter.events[-1]["type"] == "max_steps_reached"
+    assert emitter.events[-1]["payload"]["max_steps"] == 1
 
 
 def test_agent_passes_tool_context_to_tools():

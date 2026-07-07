@@ -334,13 +334,14 @@ git diff --check
 
 ## Boundary
 
-当前只实现同步、最小、可测试的 Agent 闭环。
+当前实现最小、可测试的 Agent 闭环。普通 Agent endpoint 仍同步返回完整结果；
+`/agent/stream` 额外支持 SSE-format 运行事件 timeline，用于实时展示 agent/tool 状态。
 
 暂不实现：
 
-- WebSocket、SSE 或 streaming Agent。
+- WebSocket 或双向实时 Agent。
+- Token-by-token answer streaming。
 - DeepSeek beta strict mode。
-- Agent UI。
 - 后台任务、定时任务和长任务恢复。
 - 多用户权限、审计和工具授权。
 - 外部浏览器、CLI、文件系统、邮件、日历等高风险工具。
