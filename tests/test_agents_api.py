@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.api import agents as agents_api
 from app.api import workspaces as workspaces_api
+from app.core.agent_modes import AGENT_MODE_REACT_TEXT
 from app.core.llm import DeepSeekToolCall, DeepSeekToolCallResult
 from app.core.native_tool_calling import DeepSeekNativeToolCallingExecutor
 from app.db.session import get_session
@@ -16,8 +17,13 @@ from app.services.workspace_document_service import WorkspaceDocumentService
 from app.services.workspace_service import WorkspaceService
 from app.tools.calculator import CalculatorTool
 from app.tools.document_tools import WorkspaceDocumentSearchTool
-from app.tools.registry import ToolRegistry
-from tests.fakes import FakeChatService, FakeRAGService
+from app.tools.registry import (
+    TOOL_CONFIRMATION_REQUIRED,
+    ToolContext,
+    ToolRegistry,
+    build_tool_approval_id,
+)
+from tests.fakes import ConfirmationRequiredTool, FakeChatService, FakeRAGService
 
 
 class ScriptedAgentChat:
@@ -245,6 +251,86 @@ def test_agent_stream_endpoint_streams_agent_events(agent_api):
     assert payload["agent_invocation_id"]
     assert payload["steps"][0]["action"] == "calculator"
     assert payload["metrics"]["tool_call_count"] == 1
+
+
+def test_agent_endpoint_accepts_approved_tool_call_ids(agent_api):
+    tool = ConfirmationRequiredTool()
+    registry = ToolRegistry()
+    registry.register(tool)
+    client, _ = agent_api(
+        [
+            'Action: confirmation_required\nAction Input: {"value": "hello"}',
+            "Final Answer: approved",
+        ],
+        registry=registry,
+    )
+    workspace = create_workspace(client)
+    conversation = create_conversation(client, workspace["id"])
+    approval_id = build_tool_approval_id(
+        tool_name=tool.name,
+        action_input={"value": "hello"},
+        context=ToolContext(
+            workspace_id=workspace["id"],
+            conversation_id=conversation["id"],
+            agent_mode=AGENT_MODE_REACT_TEXT,
+        ),
+    )
+
+    response = client.post(
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}/agent",
+        json={
+            "message": "use restricted tool",
+            "approved_tool_call_ids": [approval_id],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["answer"] == "approved"
+    assert payload["steps"][0]["ok"] is True
+    assert payload["steps"][0]["observation"] == "approved hello"
+    assert payload["metrics"]["failed_step_count"] == 0
+    assert tool.executed is True
+
+
+def test_agent_stream_endpoint_streams_policy_blocked_step(agent_api):
+    tool = ConfirmationRequiredTool()
+    registry = ToolRegistry()
+    registry.register(tool)
+    client, _ = agent_api(
+        [
+            'Action: confirmation_required\nAction Input: {"value": "hello"}',
+            "Final Answer: waiting for approval",
+        ],
+        registry=registry,
+    )
+    workspace = create_workspace(client)
+    conversation = create_conversation(client, workspace["id"])
+
+    with client.stream(
+        "POST",
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}"
+        "/agent/stream",
+        json={"message": "use restricted tool"},
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    events = parse_sse_events(body)
+    tool_finished = [event for event in events if event["event"] == "tool_finished"][0][
+        "data"
+    ]
+    step = tool_finished["payload"]["step"]
+    assert step["ok"] is False
+    assert step["error"] == TOOL_CONFIRMATION_REQUIRED
+    assert step["tool_result"]["data"]["approval_id"].startswith("tool_approval_")
+    assert tool.executed is False
+
+    finished = events[-1]["data"]
+    payload = finished["payload"]
+    assert payload["answer"] == "waiting for approval"
+    assert payload["steps"][0]["error"] == TOOL_CONFIRMATION_REQUIRED
+    assert payload["metrics"]["failed_step_count"] == 1
 
 
 def test_agent_endpoint_runs_native_tool_calling_mode(agent_api):
@@ -478,6 +564,8 @@ def test_agent_openapi_route_documents_agent_endpoint():
     assert "default mode is ReAct text" in operation["description"]
     assert "DeepSeek native tool calling" in operation["description"]
     assert "separate agent invocation record" in operation["description"]
+    request_schema = schema["components"]["schemas"]["WorkspaceAgentRequest"]
+    assert "approved_tool_call_ids" in request_schema["properties"]
 
     stream_operation = schema["paths"][
         "/workspaces/{workspace_id}/conversations/{conversation_id}/agent/stream"

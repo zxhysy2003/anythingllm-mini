@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from pydantic import BaseModel, Field
+
 from app.services.chat_service import ChatResult
 from app.services.document_service import (
     DeletedDocumentFiles,
@@ -8,6 +10,7 @@ from app.services.document_service import (
     SavedDocumentFile,
 )
 from app.services.rag_service import IndexedDocument, RAGContextBuildResult, RAGSource
+from app.tools.registry import ToolResult
 
 
 class CollectingEventEmitter:
@@ -16,6 +19,28 @@ class CollectingEventEmitter:
 
     async def emit(self, event_type, payload=None):
         self.events.append({"type": event_type, "payload": payload or {}})
+
+
+class ConfirmationRequiredInput(BaseModel):
+    value: str = Field(min_length=1)
+
+
+class ConfirmationRequiredTool:
+    name = "confirmation_required"
+    description = "Require approval before running."
+    input_model = ConfirmationRequiredInput
+    risk_level = "high"
+    side_effects = True
+    requires_confirmation = True
+    allowed_in_agent_modes = None
+
+    def __init__(self):
+        self.executed = False
+
+    async def run(self, input_data, context):
+        del context
+        self.executed = True
+        return ToolResult(ok=True, content=f"approved {input_data.value}")
 
 
 class FakeRAGService:

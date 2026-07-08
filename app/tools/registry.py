@@ -1,11 +1,21 @@
-from typing import Any, Protocol
+import hashlib
+import json
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field, ValidationError
+
+ToolRiskLevel = Literal["low", "medium", "high"]
+TOOL_RISK_LEVELS = {"low", "medium", "high"}
+DEFAULT_TOOL_RISK_LEVEL: ToolRiskLevel = "low"
+TOOL_CONFIRMATION_REQUIRED = "tool_confirmation_required"
+TOOL_BLOCKED_BY_POLICY = "tool_blocked_by_policy"
 
 
 class ToolContext(BaseModel):
     workspace_id: str | None = None
     conversation_id: str | None = None
+    agent_mode: str | None = None
+    approved_tool_call_ids: set[str] = Field(default_factory=set)
 
 
 class ToolResult(BaseModel):
@@ -19,12 +29,20 @@ class ToolDescription(BaseModel):
     name: str
     description: str
     input_schema: dict[str, Any]
+    risk_level: ToolRiskLevel = DEFAULT_TOOL_RISK_LEVEL
+    side_effects: bool = False
+    requires_confirmation: bool = False
+    allowed_in_agent_modes: list[str] | None = None
 
 
 class BaseTool(Protocol):
     name: str
     description: str
     input_model: type[BaseModel]
+    risk_level: ToolRiskLevel
+    side_effects: bool
+    requires_confirmation: bool
+    allowed_in_agent_modes: list[str] | None
 
     async def run(
         self,
@@ -54,6 +72,12 @@ class ToolRegistry:
                 name=name,
                 description=tool.description,
                 input_schema=tool.input_model.model_json_schema(),
+                risk_level=_tool_risk_level(tool),
+                side_effects=bool(getattr(tool, "side_effects", False)),
+                requires_confirmation=bool(
+                    getattr(tool, "requires_confirmation", False)
+                ),
+                allowed_in_agent_modes=_tool_allowed_agent_modes(tool),
             )
             for name, tool in self._tools.items()
         ]
@@ -96,6 +120,15 @@ class ToolRegistry:
                 error="invalid_tool_input",
             )
 
+        policy_result = self._evaluate_policy(
+            tool=tool,
+            name=name,
+            input_data=input_data,
+            context=context,
+        )
+        if policy_result is not None:
+            return policy_result
+
         try:
             return await tool.run(input_data, context)
         except Exception as exc:
@@ -104,6 +137,45 @@ class ToolRegistry:
                 content=f"Tool execution failed: {exc}",
                 error="tool_execution_failed",
             )
+
+    def _evaluate_policy(
+        self,
+        *,
+        tool: BaseTool,
+        name: str,
+        input_data: BaseModel,
+        context: ToolContext,
+    ) -> ToolResult | None:
+        allowed_in_agent_modes = _tool_allowed_agent_modes(tool)
+        if (
+            allowed_in_agent_modes is not None
+            and context.agent_mode not in allowed_in_agent_modes
+        ):
+            return _policy_failure_result(
+                tool=tool,
+                name=name,
+                error=TOOL_BLOCKED_BY_POLICY,
+                reason="agent_mode_not_allowed",
+            )
+
+        if not bool(getattr(tool, "requires_confirmation", False)):
+            return None
+
+        approval_id = build_tool_approval_id(
+            tool_name=name,
+            action_input=input_data.model_dump(mode="json"),
+            context=context,
+        )
+        if approval_id in context.approved_tool_call_ids:
+            return None
+
+        return _policy_failure_result(
+            tool=tool,
+            name=name,
+            error=TOOL_CONFIRMATION_REQUIRED,
+            reason="confirmation_required",
+            approval_id=approval_id,
+        )
 
 
 def create_default_tool_registry() -> ToolRegistry:
@@ -114,3 +186,67 @@ def create_default_tool_registry() -> ToolRegistry:
     registry.register(CalculatorTool())
     registry.register(WorkspaceDocumentSearchTool())
     return registry
+
+
+def build_tool_approval_id(
+    *,
+    tool_name: str,
+    action_input: dict[str, Any],
+    context: ToolContext,
+) -> str:
+    normalized_action_input = json.dumps(
+        action_input,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    raw_approval_id = "|".join(
+        [
+            tool_name,
+            normalized_action_input,
+            context.workspace_id or "",
+            context.conversation_id or "",
+            context.agent_mode or "",
+        ]
+    )
+    digest = hashlib.sha256(raw_approval_id.encode("utf-8")).hexdigest()[:16]
+    return f"tool_approval_{digest}"
+
+
+def _policy_failure_result(
+    *,
+    tool: BaseTool,
+    name: str,
+    error: str,
+    reason: str,
+    approval_id: str | None = None,
+) -> ToolResult:
+    data: dict[str, Any] = {
+        "reason": reason,
+        "tool_name": name,
+        "risk_level": _tool_risk_level(tool),
+        "side_effects": bool(getattr(tool, "side_effects", False)),
+        "requires_confirmation": bool(getattr(tool, "requires_confirmation", False)),
+    }
+    if approval_id is not None:
+        data["approval_id"] = approval_id
+    return ToolResult(
+        ok=False,
+        content=f"Tool blocked by policy: {reason}.",
+        data=data,
+        error=error,
+    )
+
+
+def _tool_risk_level(tool: BaseTool) -> ToolRiskLevel:
+    risk_level = getattr(tool, "risk_level", DEFAULT_TOOL_RISK_LEVEL)
+    if risk_level not in TOOL_RISK_LEVELS:
+        return DEFAULT_TOOL_RISK_LEVEL
+    return risk_level
+
+
+def _tool_allowed_agent_modes(tool: BaseTool) -> list[str] | None:
+    allowed_in_agent_modes = getattr(tool, "allowed_in_agent_modes", None)
+    if allowed_in_agent_modes is None:
+        return None
+    return list(allowed_in_agent_modes)

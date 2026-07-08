@@ -14,6 +14,7 @@ class WorkspaceAgentRequest(BaseModel):
     message: str = Field(min_length=1)
     max_steps: int = Field(default=DEFAULT_AGENT_STEPS, ge=1, le=MAX_AGENT_STEPS)
     agent_mode: AgentModeRequest = AGENT_MODE_REACT_TEXT
+    approved_tool_call_ids: list[str] = Field(default_factory=list)
 
     @field_validator("message")
     @classmethod

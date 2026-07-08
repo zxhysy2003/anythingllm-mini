@@ -11,8 +11,13 @@ from app.core.agent_loop import (
     parse_agent_output,
 )
 from app.tools.calculator import CalculatorTool
-from app.tools.registry import ToolContext, ToolRegistry, ToolResult
-from tests.fakes import CollectingEventEmitter
+from app.tools.registry import (
+    TOOL_CONFIRMATION_REQUIRED,
+    ToolContext,
+    ToolRegistry,
+    ToolResult,
+)
+from tests.fakes import CollectingEventEmitter, ConfirmationRequiredTool
 
 
 class FakeLLMResult:
@@ -230,6 +235,30 @@ def test_agent_records_invalid_tool_input_and_allows_final_answer():
     assert result.steps[0].tool_result is not None
     assert result.steps[0].tool_result.error == "invalid_tool_input"
     assert result.agent_mode == AGENT_MODE_REACT_TEXT
+
+
+def test_agent_records_confirmation_required_tool_without_executing():
+    tool = ConfirmationRequiredTool()
+    result = run_agent(
+        [
+            'Action: confirmation_required\nAction Input: {"value": "hello"}',
+            "Final Answer: waiting for approval",
+        ],
+        make_registry(tool),
+        context=ToolContext(
+            workspace_id="workspace-1",
+            conversation_id="conversation-1",
+            agent_mode=AGENT_MODE_REACT_TEXT,
+        ),
+    )
+
+    assert result.answer == "waiting for approval"
+    assert len(result.steps) == 1
+    assert result.steps[0].ok is False
+    assert result.steps[0].error == TOOL_CONFIRMATION_REQUIRED
+    assert result.steps[0].tool_result is not None
+    assert result.steps[0].tool_result.data["approval_id"].startswith("tool_approval_")
+    assert tool.executed is False
 
 
 def test_agent_records_unknown_tool_and_allows_final_answer():

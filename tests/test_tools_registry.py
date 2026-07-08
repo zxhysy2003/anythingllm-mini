@@ -4,11 +4,15 @@ import pytest
 from pydantic import BaseModel, Field
 
 from app.tools.registry import (
+    TOOL_BLOCKED_BY_POLICY,
+    TOOL_CONFIRMATION_REQUIRED,
     ToolContext,
     ToolRegistry,
     ToolResult,
+    build_tool_approval_id,
     create_default_tool_registry,
 )
+from tests.fakes import ConfirmationRequiredTool
 
 
 class EchoInput(BaseModel):
@@ -33,6 +37,11 @@ class BrokenTool:
     async def run(self, input_data, context):
         del input_data, context
         raise RuntimeError("boom")
+
+
+class RestrictedAgentModeTool(EchoTool):
+    name = "restricted_agent_mode"
+    allowed_in_agent_modes = ["native_tool_calling"]
 
 
 class EmptyNameTool(EchoTool):
@@ -122,6 +131,109 @@ def test_registry_run_wraps_tool_exceptions():
     assert result.ok is False
     assert result.error == "tool_execution_failed"
     assert "boom" in result.content
+
+
+def test_registry_returns_default_tool_policy_metadata():
+    registry = create_default_tool_registry()
+
+    descriptions = {
+        description.name: description for description in registry.list_tools()
+    }
+
+    assert descriptions["calculator"].risk_level == "low"
+    assert descriptions["calculator"].side_effects is False
+    assert descriptions["calculator"].requires_confirmation is False
+    assert descriptions["calculator"].allowed_in_agent_modes is None
+    assert descriptions["workspace_document_search"].risk_level == "low"
+    assert descriptions["workspace_document_search"].side_effects is False
+    assert descriptions["workspace_document_search"].requires_confirmation is False
+    assert descriptions["workspace_document_search"].allowed_in_agent_modes is None
+
+
+def test_registry_blocks_confirmation_required_tool_without_approval():
+    tool = ConfirmationRequiredTool()
+    registry = ToolRegistry()
+    registry.register(tool)
+    context = ToolContext(
+        workspace_id="workspace-1",
+        conversation_id="conversation-1",
+        agent_mode="react_text",
+    )
+
+    result = asyncio.run(registry.run(tool.name, {"value": "hello"}, context))
+
+    assert result.ok is False
+    assert result.error == TOOL_CONFIRMATION_REQUIRED
+    assert result.data["reason"] == "confirmation_required"
+    assert result.data["tool_name"] == tool.name
+    assert result.data["risk_level"] == "high"
+    assert result.data["side_effects"] is True
+    assert result.data["requires_confirmation"] is True
+    assert result.data["approval_id"] == build_tool_approval_id(
+        tool_name=tool.name,
+        action_input={"value": "hello"},
+        context=context,
+    )
+    assert tool.executed is False
+
+
+def test_registry_runs_confirmation_required_tool_with_matching_approval():
+    tool = ConfirmationRequiredTool()
+    registry = ToolRegistry()
+    registry.register(tool)
+    context = ToolContext(
+        workspace_id="workspace-1",
+        conversation_id="conversation-1",
+        agent_mode="react_text",
+    )
+    approval_id = build_tool_approval_id(
+        tool_name=tool.name,
+        action_input={"value": "hello"},
+        context=context,
+    )
+    context.approved_tool_call_ids.add(approval_id)
+
+    result = asyncio.run(registry.run(tool.name, {"value": "hello"}, context))
+
+    assert result.ok is True
+    assert result.content == "approved hello"
+    assert tool.executed is True
+
+
+def test_registry_blocks_tool_when_agent_mode_is_not_allowed():
+    registry = ToolRegistry()
+    registry.register(RestrictedAgentModeTool())
+
+    result = asyncio.run(
+        registry.run(
+            "restricted_agent_mode",
+            {"value": "hello"},
+            ToolContext(agent_mode="react_text"),
+        )
+    )
+
+    assert result.ok is False
+    assert result.error == TOOL_BLOCKED_BY_POLICY
+    assert result.data["reason"] == "agent_mode_not_allowed"
+
+
+def test_registry_validates_tool_input_before_policy_check():
+    tool = ConfirmationRequiredTool()
+    registry = ToolRegistry()
+    registry.register(tool)
+
+    result = asyncio.run(
+        registry.run(
+            tool.name,
+            {"value": ""},
+            ToolContext(agent_mode="react_text"),
+        )
+    )
+
+    assert result.ok is False
+    assert result.error == "invalid_tool_input"
+    assert "approval_id" not in result.data
+    assert tool.executed is False
 
 
 def test_default_tool_registry_includes_v4_tools():

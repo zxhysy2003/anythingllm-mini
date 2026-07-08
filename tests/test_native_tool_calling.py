@@ -7,8 +7,13 @@ from app.core.agent_modes import AGENT_MODE_NATIVE_TOOL_CALLING
 from app.core.llm import DeepSeekToolCall, DeepSeekToolCallResult
 from app.core.native_tool_calling import DeepSeekNativeToolCallingExecutor
 from app.tools.calculator import CalculatorTool
-from app.tools.registry import ToolContext, ToolRegistry, ToolResult
-from tests.fakes import CollectingEventEmitter
+from app.tools.registry import (
+    TOOL_CONFIRMATION_REQUIRED,
+    ToolContext,
+    ToolRegistry,
+    ToolResult,
+)
+from tests.fakes import CollectingEventEmitter, ConfirmationRequiredTool
 
 
 class ScriptedToolCallingClient:
@@ -255,6 +260,46 @@ def test_native_executor_records_unknown_and_invalid_tool_steps():
     assert result.steps[1].error == "invalid_tool_input"
     assert client.calls[1]["messages"][-2]["tool_call_id"] == "call-1"
     assert client.calls[1]["messages"][-1]["tool_call_id"] == "call-2"
+
+
+def test_native_executor_records_confirmation_required_tool_without_executing():
+    tool = ConfirmationRequiredTool()
+    client = ScriptedToolCallingClient(
+        [
+            tool_result(
+                "",
+                tool_calls=[tool_call("confirmation_required", '{"value": "hello"}')],
+                finish_reason="tool_calls",
+            ),
+            tool_result("waiting for approval"),
+        ]
+    )
+    executor = DeepSeekNativeToolCallingExecutor(
+        llm=client,
+        tool_registry=make_registry(tool),
+    )
+
+    result = asyncio.run(
+        executor.run(
+            "use tool",
+            ToolContext(
+                workspace_id="workspace-1",
+                conversation_id="conversation-1",
+                agent_mode=AGENT_MODE_NATIVE_TOOL_CALLING,
+            ),
+        )
+    )
+
+    assert result.answer == "waiting for approval"
+    assert len(result.steps) == 1
+    assert result.steps[0].ok is False
+    assert result.steps[0].error == TOOL_CONFIRMATION_REQUIRED
+    assert result.steps[0].tool_result is not None
+    assert result.steps[0].tool_result.data["approval_id"].startswith("tool_approval_")
+    assert tool.executed is False
+    assert client.calls[1]["messages"][-1]["content"] == (
+        "Tool blocked by policy: confirmation_required."
+    )
 
 
 def test_native_executor_stops_after_max_steps():

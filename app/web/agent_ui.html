@@ -998,6 +998,12 @@
           }
           if (event.type === "tool_finished") {
             const step = payload.step || {};
+            if (step.error === "tool_confirmation_required") {
+              return `${step.action || "-"} requires confirmation`;
+            }
+            if (step.error === "tool_blocked_by_policy") {
+              return `${step.action || "-"} blocked by policy`;
+            }
             return `${step.action || "-"} ${step.ok ? "completed" : step.error || "failed"}`;
           }
           if (event.type === "parse_error") {
@@ -1077,6 +1083,14 @@
           observationLabel.textContent = "Observation:";
           observation.append(observationLabel, ` ${step.observation || "-"}`);
           kv.append(action, observation);
+          const policy = policySummary(step);
+          if (policy) {
+            const policyNode = document.createElement("div");
+            const policyLabel = document.createElement("strong");
+            policyLabel.textContent = "Policy:";
+            policyNode.append(policyLabel, ` ${policy}`);
+            kv.append(policyNode);
+          }
 
           const details = document.createElement("details");
           const summary = document.createElement("summary");
@@ -1090,6 +1104,18 @@
 
           node.append(head, kv, details);
           return node;
+        }
+
+        function policySummary(step) {
+          const toolResult = step.tool_result || {};
+          const data = toolResult.data || {};
+          if (step.error === "tool_confirmation_required") {
+            return `requires confirmation (${data.approval_id || "approval id unavailable"})`;
+          }
+          if (step.error === "tool_blocked_by_policy") {
+            return `blocked by policy (${data.reason || "not allowed"})`;
+          }
+          return "";
         }
 
         function renderSources(sources) {
@@ -1156,6 +1182,7 @@
               message,
               max_steps: maxSteps,
               agent_mode: els.agentMode.value,
+              approved_tool_call_ids: [],
             };
             let finalRun = null;
             let failure = null;

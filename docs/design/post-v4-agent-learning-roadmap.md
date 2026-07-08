@@ -75,6 +75,10 @@ AnythingLLM 时仍然值得学习的 Agent 开发内容。
 
 ### 2. Tool policy、风险等级和用户批准
 
+状态：已实现第一版 backend-first tool policy。当前支持工具静态风险元数据、执行前
+policy gate、stateless approval id 和可解释 failed step；仍不做真实高危工具、
+持久化 pending approval、多用户权限系统或完整 UI approval workflow。
+
 能力线：Safety and boundaries、Agent capabilities。
 
 影响阶段：V4 tool registry，跨阶段安全边界。

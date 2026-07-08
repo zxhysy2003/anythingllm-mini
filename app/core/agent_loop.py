@@ -97,6 +97,9 @@ def build_agent_system_prompt(
         tool_blocks.append(
             f"- name: {tool.name}\n"
             f"  description: {tool.description}\n"
+            f"  risk_level: {tool.risk_level}\n"
+            f"  side_effects: {tool.side_effects}\n"
+            f"  requires_confirmation: {tool.requires_confirmation}\n"
             f"  input_schema: {input_schema}"
         )
     tools_text = "\n".join(tool_blocks) if tool_blocks else "- no tools available"
@@ -145,6 +148,9 @@ class ReactTextAgentExecutor:
         agent_system_prompt = build_agent_system_prompt(
             system_prompt,
             self.tool_registry,
+        )
+        tool_context = context.model_copy(
+            update={"agent_mode": context.agent_mode or self.agent_mode}
         )
         steps: list[AgentStep] = []
         provider = None
@@ -221,7 +227,7 @@ class ReactTextAgentExecutor:
             tool_result = await self.tool_registry.run(
                 parsed.action or "",
                 parsed.action_input,
-                context,
+                tool_context,
             )
             step = AgentStep(
                 step_index=step_index,

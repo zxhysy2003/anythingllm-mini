@@ -33,8 +33,19 @@ from app.services.exceptions import (
 from app.services.workspace_service import WorkspaceService
 from app.tools.calculator import CalculatorTool
 from app.tools.document_tools import WorkspaceDocumentSearchTool
-from app.tools.registry import ToolRegistry, ToolResult
-from tests.fakes import CollectingEventEmitter, FakeChatService, FakeRAGService
+from app.tools.registry import (
+    TOOL_CONFIRMATION_REQUIRED,
+    ToolContext,
+    ToolRegistry,
+    ToolResult,
+    build_tool_approval_id,
+)
+from tests.fakes import (
+    CollectingEventEmitter,
+    ConfirmationRequiredTool,
+    FakeChatService,
+    FakeRAGService,
+)
 
 
 class ScriptedAgentChat:
@@ -562,6 +573,73 @@ def test_agent_service_persists_invalid_tool_input_step(session):
     assert persisted_step.ok is False
     assert persisted_step.error == "invalid_tool_input"
     assert persisted_step.tool_result["error"] == "invalid_tool_input"
+
+
+def test_agent_service_persists_confirmation_required_tool_step(session):
+    tool = ConfirmationRequiredTool()
+    agent_service, _, _, workspace, conversation = make_services(
+        session,
+        [
+            'Action: confirmation_required\nAction Input: {"value": "hello"}',
+            "Final Answer: waiting for approval",
+        ],
+        registry=make_registry(tool),
+    )
+
+    result = asyncio.run(
+        agent_service.run_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "use restricted tool",
+        )
+    )
+
+    assert result.metrics.failed_step_count == 1
+    assert result.steps[0].error == TOOL_CONFIRMATION_REQUIRED
+    assert result.steps[0].tool_result is not None
+    assert result.steps[0].tool_result.data["approval_id"].startswith("tool_approval_")
+    assert tool.executed is False
+    persisted_step = list_steps(session, result.agent_invocation_id)[0]
+    assert persisted_step.ok is False
+    assert persisted_step.error == TOOL_CONFIRMATION_REQUIRED
+    assert persisted_step.tool_result["error"] == TOOL_CONFIRMATION_REQUIRED
+
+
+def test_agent_service_runs_confirmation_required_tool_with_approval(session):
+    tool = ConfirmationRequiredTool()
+    agent_service, _, _, workspace, conversation = make_services(
+        session,
+        [
+            'Action: confirmation_required\nAction Input: {"value": "hello"}',
+            "Final Answer: approved",
+        ],
+        registry=make_registry(tool),
+    )
+    approval_id = build_tool_approval_id(
+        tool_name=tool.name,
+        action_input={"value": "hello"},
+        context=ToolContext(
+            workspace_id=workspace.id,
+            conversation_id=conversation.id,
+            agent_mode=AGENT_MODE_REACT_TEXT,
+        ),
+    )
+
+    result = asyncio.run(
+        agent_service.run_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "use restricted tool",
+            approved_tool_call_ids=[approval_id],
+        )
+    )
+
+    assert result.metrics.failed_step_count == 0
+    assert result.steps[0].ok is True
+    assert result.steps[0].observation == "approved hello"
+    assert tool.executed is True
 
 
 def test_agent_service_reports_max_steps_reached(session):

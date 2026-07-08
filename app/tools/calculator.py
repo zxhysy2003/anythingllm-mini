@@ -36,6 +36,10 @@ class CalculatorTool:
     name = "calculator"
     description = "Evaluate a basic arithmetic expression."
     input_model = CalculatorInput
+    risk_level = "low"
+    side_effects = False
+    requires_confirmation = False
+    allowed_in_agent_modes = None
 
     async def run(
         self,

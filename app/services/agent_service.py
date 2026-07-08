@@ -145,6 +145,7 @@ class AgentService:
         *,
         max_steps: int = DEFAULT_AGENT_STEPS,
         agent_mode: str = AGENT_MODE_REACT_TEXT,
+        approved_tool_call_ids: list[str] | set[str] | None = None,
         event_emitter: AgentEventEmitter | None = None,
     ) -> WorkspaceAgentResult:
         try:
@@ -172,6 +173,8 @@ class AgentService:
                 context=ToolContext(
                     workspace_id=context.workspace.id,
                     conversation_id=context.conversation.id,
+                    agent_mode=agent_executor.agent_mode,
+                    approved_tool_call_ids=set(approved_tool_call_ids or []),
                 ),
                 system_prompt=self._agent_system_prompt(
                     context.workspace.system_prompt,

@@ -78,6 +78,7 @@ async def run_agent_in_conversation(
             request.message,
             max_steps=request.max_steps,
             agent_mode=request.agent_mode,
+            approved_tool_call_ids=request.approved_tool_call_ids,
         )
         return WorkspaceAgentResponse.model_validate(result)
     except (
@@ -120,6 +121,7 @@ async def stream_agent_in_conversation(
                 request.message,
                 max_steps=request.max_steps,
                 agent_mode=request.agent_mode,
+                approved_tool_call_ids=request.approved_tool_call_ids,
                 event_emitter=emitter,
             )
         except Exception as exc:

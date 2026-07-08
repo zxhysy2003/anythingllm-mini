@@ -62,6 +62,9 @@ class DeepSeekNativeToolCallingExecutor:
             system_prompt,
             history,
         )
+        tool_context = context.model_copy(
+            update={"agent_mode": context.agent_mode or self.agent_mode}
+        )
         tools = self.tool_registry.list_openai_tools()
         steps: list[AgentStep] = []
         provider = None
@@ -121,7 +124,7 @@ class DeepSeekNativeToolCallingExecutor:
                 step, observation = await self._run_tool_call(
                     step_index=step_index,
                     tool_call=tool_call,
-                    context=context,
+                    context=tool_context,
                 )
                 steps.append(step)
                 await emit_agent_event(

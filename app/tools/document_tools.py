@@ -18,6 +18,10 @@ class WorkspaceDocumentSearchTool:
     name = "workspace_document_search"
     description = "Search indexed documents in the current workspace."
     input_model = WorkspaceDocumentSearchInput
+    risk_level = "low"
+    side_effects = False
+    requires_confirmation = False
+    allowed_in_agent_modes = None
 
     def __init__(self, rag: RAGService | None = None):
         self.rag = rag or rag_service
