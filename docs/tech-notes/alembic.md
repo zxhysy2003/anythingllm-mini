@@ -21,7 +21,7 @@ Alembic 是 SQLAlchemy 生态里的数据库迁移工具。
 
 引入 Alembic 后解决了这些问题：
 
-- 数据库结构变化被固化在 `alembic/versions/` 下。
+- 数据库结构变化被固化在 `backend/alembic/versions/` 下。
 - 当前数据库版本记录在 `alembic_version` 表里。
 - 新库可以直接 `upgrade head` 建到最新结构。
 - 旧库可以先 `stamp` 到已有结构版本，再 `upgrade` 到最新版本。
@@ -33,23 +33,23 @@ Alembic 属于基础设施层，更准确地说是数据库 schema 管理层。
 
 上游是谁：
 
-- SQLModel ORM 模型，例如 `app/models/conversation.py`
-- 数据库配置，例如 `app/core/config.py` 里的 `database_url`
-- 数据库 engine 创建逻辑，例如 `app/db/session.py`
+- SQLModel ORM 模型，例如 `backend/app/models/conversation.py`
+- 数据库配置，例如 `backend/app/core/config.py` 里的 `database_url`
+- 数据库 engine 创建逻辑，例如 `backend/app/db/session.py`
 
 下游是谁：
 
-- SQLite 数据库文件，当前默认是 `anythingllm_mini.db`
-- 应用启动初始化逻辑，当前在 `app/db/init_db.py`
-- 测试数据库初始化流程，例如 `tests/test_db_init.py`
+- SQLite 数据库文件，当前默认是仓库根目录下的 `anythingllm_mini.db`
+- 应用启动初始化逻辑，当前在 `backend/app/db/init_db.py`
+- 测试数据库初始化流程，例如 `backend/tests/test_db_init.py`
 
 它和这些模块交互：
 
-- `alembic.ini`：Alembic 的主配置文件。
-- `alembic/env.py`：迁移运行环境，读取项目配置，加载 `SQLModel.metadata`。
-- `alembic/versions/*.py`：具体迁移脚本。
-- `app/db/init_db.py`：提供 `run_migrations()` 和 `create_db_and_tables()`，应用启动时执行 `upgrade head`。
-- `app/models/__init__.py`：被 `env.py` 导入，用来确保模型注册进 `SQLModel.metadata`。
+- `backend/alembic.ini`：Alembic 的主配置文件。
+- `backend/alembic/env.py`：迁移运行环境，读取项目配置，加载 `SQLModel.metadata`。
+- `backend/alembic/versions/*.py`：具体迁移脚本。
+- `backend/app/db/init_db.py`：提供 `run_migrations()` 和 `create_db_and_tables()`，应用启动时执行 `upgrade head`。
+- `backend/app/models/__init__.py`：被 `env.py` 导入，用来确保模型注册进 `SQLModel.metadata`。
 
 ## 4. 具体使用流程
 
@@ -59,11 +59,11 @@ Alembic 属于基础设施层，更准确地说是数据库 schema 管理层。
 flowchart TD
     A["应用启动"] --> B["调用 create_db_and_tables()"]
     B --> C["run_migrations()"]
-    C --> D["读取 alembic.ini 和 database_url"]
-    D --> E["加载 alembic/env.py"]
+    C --> D["读取 backend/alembic.ini 和 database_url"]
+    D --> E["加载 backend/alembic/env.py"]
     E --> F["导入 app.models"]
     F --> G["读取 SQLModel.metadata"]
-    G --> H["执行 alembic/versions 中未执行的迁移"]
+    G --> H["执行 backend/alembic/versions 中未执行的迁移"]
     H --> I["更新 alembic_version"]
     I --> J["数据库结构到达 head"]
 ```
@@ -87,6 +87,7 @@ flowchart TD
 处理旧库的流程：
 
 ```bash
+cd backend
 conda run -n anythingllm-mini alembic stamp 0001_baseline_v3_schema
 conda run -n anythingllm-mini alembic upgrade head
 ```
@@ -99,6 +100,7 @@ conda run -n anythingllm-mini alembic upgrade head
 以后新增字段时的推荐流程：
 
 ```bash
+cd backend
 conda run -n anythingllm-mini alembic revision --autogenerate -m "add xxx"
 conda run -n anythingllm-mini alembic upgrade head
 conda run -n anythingllm-mini pytest -q
@@ -124,13 +126,15 @@ conda run -n anythingllm-mini pytest -q
 
 | 配置 / 参数 | 当前值 / 位置 | 作用 | 调整影响 |
 | --- | --- | --- | --- |
-| `sqlalchemy.url` | `alembic.ini` 中默认 `sqlite:///./anythingllm_mini.db` | Alembic CLI 默认连接的数据库 | 改错会迁移到错误数据库 |
-| `settings.database_url` | `app/core/config.py`，默认 `sqlite:///./anythingllm_mini.db` | 应用运行时数据库地址 | 影响应用启动、测试和迁移目标 |
-| `script_location` | `alembic` | 指向迁移脚本目录 | 改错后 Alembic 找不到 `env.py` 和 versions |
-| `target_metadata` | `alembic/env.py` 中的 `SQLModel.metadata` | autogenerate 对比模型结构的依据 | 模型没有注册时会漏生成迁移 |
-| `compare_type=True` | `alembic/env.py` | 让 Alembic 检查列类型变化 | 可能生成更多类型变更，需要人工确认 |
-| `render_as_batch=True` | `alembic/env.py` | 更好兼容 SQLite 表结构修改 | 对 SQLite 友好，但 migration 生成结果要检查 |
-| `disable_existing_loggers=False` | `alembic/env.py` | 避免 Alembic logging 配置关闭应用 logger | 如果去掉，可能影响日志测试和运行期日志 |
+| `sqlalchemy.url` | `backend/alembic.ini` 中默认 `sqlite:///./anythingllm_mini.db` | Alembic CLI 默认连接的数据库，最终由项目代码锚定到仓库根 | 改错会迁移到错误数据库 |
+| `settings.database_url` | `backend/app/core/config.py`，默认 `sqlite:///./anythingllm_mini.db` | 应用运行时数据库地址 | 影响应用启动、测试和迁移目标 |
+| `PROJECT_ROOT` | `backend/app/core/config.py`，指向 `anythingllm-mini/` | 解析 `.env`、SQLite、Chroma、上传和解析文件 | 改错会改变运行数据位置 |
+| `BACKEND_ROOT` | `backend/app/core/config.py`，指向 `anythingllm-mini/backend/` | 解析 Alembic 配置和迁移脚本 | 改错后 Alembic 找不到 `env.py` 和 versions |
+| `script_location` | `backend/alembic` | 指向迁移脚本目录 | 改错后 Alembic 找不到 `env.py` 和 versions |
+| `target_metadata` | `backend/alembic/env.py` 中的 `SQLModel.metadata` | autogenerate 对比模型结构的依据 | 模型没有注册时会漏生成迁移 |
+| `compare_type=True` | `backend/alembic/env.py` | 让 Alembic 检查列类型变化 | 可能生成更多类型变更，需要人工确认 |
+| `render_as_batch=True` | `backend/alembic/env.py` | 更好兼容 SQLite 表结构修改 | 对 SQLite 友好，但 migration 生成结果要检查 |
+| `disable_existing_loggers=False` | `backend/alembic/env.py` | 避免 Alembic logging 配置关闭应用 logger | 如果去掉，可能影响日志测试和运行期日志 |
 
 ## 7. 替代技术对比
 
@@ -181,13 +185,13 @@ conda run -n anythingllm-mini pytest -q
 
 - 现象：日志相关测试可能捕捉不到服务层 logger 输出。
 - 原因：Alembic 默认 `fileConfig()` 有机会禁用已存在 logger。
-- 解决：在 `alembic/env.py` 中使用 `fileConfig(config.config_file_name, disable_existing_loggers=False)`。
+- 解决：在 `backend/alembic/env.py` 中使用 `fileConfig(config.config_file_name, disable_existing_loggers=False)`。
 
 问题 4：SQLite 相对路径需要统一解析。
 
 - 现象：测试和 CLI 在不同工作目录运行时，SQLite 相对路径可能指向不同位置。
 - 原因：`sqlite:///./anythingllm_mini.db` 是相对路径。
-- 解决：`app/db/init_db.py` 和 `app/db/session.py` 复用项目里的 `_resolve_database_url()`，让路径解析保持一致。
+- 解决：`backend/app/db/init_db.py` 和 `backend/app/db/session.py` 复用项目里的 `_resolve_database_url()`，让 SQLite 路径始终按 `PROJECT_ROOT` 解析；Alembic 自己的配置和脚本路径按 `BACKEND_ROOT` 解析。
 
 ## 10. 面试常见问题
 
@@ -213,7 +217,7 @@ conda run -n anythingllm-mini pytest -q
 
 ## 11. 后续优化方向
 
-- 增加 `notes` 或 README 中的标准迁移命令说明。
+- 增加 README 中的标准迁移命令说明。
 - 为每次 schema 改动建立规则：先改模型，再生成 migration，再 review migration，再跑测试。
 - 增加 CI 检查，确保 migration 文件可执行，数据库能从空库升级到 head。
 - 在 tests 中覆盖更多迁移路径，例如从旧版本升级到最新版本后的数据兼容性。

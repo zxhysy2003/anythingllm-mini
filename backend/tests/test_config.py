@@ -1,7 +1,16 @@
 import pytest
 from pydantic import ValidationError
 
-from app.core.config import Settings
+from app.core.config import BACKEND_ROOT, PROJECT_ROOT, Settings
+
+
+def test_project_root_stays_at_repository_root_after_backend_move():
+    assert PROJECT_ROOT.name == "anythingllm-mini"
+    assert BACKEND_ROOT == PROJECT_ROOT / "backend"
+
+
+def test_settings_loads_env_file_from_project_root():
+    assert Settings.model_config["env_file"] == PROJECT_ROOT / ".env"
 
 
 @pytest.mark.parametrize("threshold", [0.0, 0.75, 1.0])

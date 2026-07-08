@@ -2,6 +2,7 @@ from alembic import command
 from sqlalchemy import inspect, text
 from sqlmodel import Session, create_engine, select
 
+from app.core.config import BACKEND_ROOT
 from app.db.init_db import alembic_config, create_db_and_tables
 from app.models.agent import AgentInvocation, AgentStepRecord
 from app.models.conversation import ConversationMessage
@@ -9,6 +10,13 @@ from app.models.conversation import ConversationMessage
 
 def sqlite_url(database_path) -> str:
     return f"sqlite:///{database_path}"
+
+
+def test_alembic_config_uses_backend_migration_scripts(tmp_path):
+    config = alembic_config(sqlite_url(tmp_path / "config.db"))
+
+    assert config.config_file_name == str(BACKEND_ROOT / "alembic.ini")
+    assert config.get_main_option("script_location") == str(BACKEND_ROOT / "alembic")
 
 
 def test_create_db_and_tables_runs_alembic_upgrade_for_new_database(tmp_path):

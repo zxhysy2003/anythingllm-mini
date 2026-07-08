@@ -19,7 +19,7 @@ Agent 闭环：
 
 ```text
 POST /workspaces/{workspace_id}/conversations/{conversation_id}/agent
-  -> app/api/agents.py
+  -> backend/app/api/agents.py
   -> AgentService.run_in_conversation()
   -> WorkspaceService.prepare_workspace_conversation_context()
   -> AgentExecutor.run()
@@ -33,17 +33,17 @@ POST /workspaces/{workspace_id}/conversations/{conversation_id}/agent
 主要文件：
 
 ```text
-app/core/agent_loop.py          -> Agent loop、ReAct parser、agent prompt builder
-app/tools/registry.py           -> ToolContext、ToolResult、ToolRegistry
-app/tools/calculator.py         -> 安全计算器工具
-app/tools/document_tools.py     -> Workspace 文档搜索工具
-app/services/agent_service.py   -> Workspace 边界、历史、执行和持久化编排
-app/api/agents.py               -> Workspace Conversation Agent API
-app/api/schemas/agents.py       -> Agent request/response schema
-app/core/agent_executor.py      -> AgentExecutor protocol、共享结果类型和 step 上限
-app/core/agent_modes.py         -> 当前可运行 agent mode 常量
-app/core/native_tool_calling.py -> DeepSeek provider-native tool calling executor
-app/core/llm.py                 -> DeepSeek text chat 和 native tool_calls adapter
+backend/app/core/agent_loop.py          -> Agent loop、ReAct parser、agent prompt builder
+backend/app/tools/registry.py           -> ToolContext、ToolResult、ToolRegistry
+backend/app/tools/calculator.py         -> 安全计算器工具
+backend/app/tools/document_tools.py     -> Workspace 文档搜索工具
+backend/app/services/agent_service.py   -> Workspace 边界、历史、执行和持久化编排
+backend/app/api/agents.py               -> Workspace Conversation Agent API
+backend/app/api/schemas/agents.py       -> Agent request/response schema
+backend/app/core/agent_executor.py      -> AgentExecutor protocol、共享结果类型和 step 上限
+backend/app/core/agent_modes.py         -> 当前可运行 agent mode 常量
+backend/app/core/native_tool_calling.py -> DeepSeek provider-native tool calling executor
+backend/app/core/llm.py                 -> DeepSeek text chat 和 native tool_calls adapter
 ```
 
 ## ReAct Text Protocol
@@ -310,25 +310,26 @@ Agent 的失败边界分层处理：
 
 测试覆盖：
 
-- `tests/test_tools_registry.py`：工具注册、查找、列表、未知工具、输入校验和异常包装。
-- `tests/test_calculator_tool.py`：安全计算器的支持表达式、拒绝危险表达式、除零和大数边界。
-- `tests/test_document_tools.py`：Workspace 文档搜索工具的 workspace 约束、参数透传、
+- `backend/tests/test_tools_registry.py`：工具注册、查找、列表、未知工具、输入校验和异常包装。
+- `backend/tests/test_calculator_tool.py`：安全计算器的支持表达式、拒绝危险表达式、除零和大数边界。
+- `backend/tests/test_document_tools.py`：Workspace 文档搜索工具的 workspace 约束、参数透传、
   sources 返回和无结果行为。
-- `tests/test_agent_loop.py`：ReAct parser、`ReactTextAgentExecutor`、parse error、
+- `backend/tests/test_agent_loop.py`：ReAct parser、`ReactTextAgentExecutor`、parse error、
   unknown tool、invalid input、`max_steps`、`agent_mode` 和 prompt builder。
-- `tests/test_native_tool_calling.py`：DeepSeek native tool calling executor、tool_calls、
+- `backend/tests/test_native_tool_calling.py`：DeepSeek native tool calling executor、tool_calls、
   tool message 回传、失败 step、多 tool call 和 `max_steps`。
-- `tests/test_agent_service.py`：Workspace context 注入、calculator、document search、
+- `backend/tests/test_agent_service.py`：Workspace context 注入、calculator、document search、
   sources 提取、executor mode 选择、消息持久化、失败 step 持久化、标题更新和 rollback。
-- `tests/test_agents_api.py`：Agent endpoint、messages endpoint 读回、失败工具步骤持久化、
+- `backend/tests/test_agents_api.py`：Agent endpoint、messages endpoint 读回、失败工具步骤持久化、
   `agent_mode` 请求校验、native mode 和普通 workspace chat 回归。
 
 常用验证命令：
 
 ```bash
+cd backend
 conda run -n anythingllm-mini pytest -q
-conda run -n anythingllm-mini ruff check app tests
-conda run -n anythingllm-mini black --check app tests
+conda run -n anythingllm-mini ruff check app tests alembic
+conda run -n anythingllm-mini black --check app tests alembic
 git diff --check
 ```
 
