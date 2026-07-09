@@ -1,6 +1,13 @@
 # AnythingLLM Mini Frontend
 
-Phase 0 provides the Vue/Vite shell for the future `anythingllm-mini` frontend.
+The Vue/Vite frontend provides a lightweight workbench for the existing
+`anythingllm-mini` backend.
+
+Current scope:
+
+- Load and create workspaces.
+- Load and create conversations inside the selected workspace.
+- Read saved conversation messages.
 
 ## Development
 
