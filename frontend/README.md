@@ -8,6 +8,8 @@ Current scope:
 - Load and create workspaces.
 - Load and create conversations inside the selected workspace.
 - Read saved conversation messages.
+- Send workspace chat and agent messages.
+- Show basic assistant run metrics.
 
 ## Development
 

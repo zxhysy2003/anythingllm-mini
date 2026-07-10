@@ -1,5 +1,6 @@
 <script setup>
 import MessageList from "@/components/chat/MessageList.vue";
+import PromptComposer from "@/components/chat/PromptComposer.vue";
 import HealthBadge from "@/components/ui/HealthBadge.vue";
 import { useBackendHealth } from "@/composables/useBackendHealth";
 import { useWorkspaceWorkbench } from "@/composables/useWorkspaceWorkbench";
@@ -16,16 +17,22 @@ const {
   selectedConversationId,
   selectedWorkspace,
   selectedConversation,
+  lastAssistantMessage,
   isLoadingWorkspaces,
   isLoadingConversations,
   isLoadingMessages,
   isCreatingWorkspace,
   isCreatingConversation,
+  isSendingMessage,
   workspacesError,
   conversationsError,
   messagesError,
   createWorkspaceError,
   createConversationError,
+  sendMessageError,
+  lastRunType,
+  lastRunMetrics,
+  sendMessageSuccessCount,
   loadWorkspaces,
   retryConversations,
   retryMessages,
@@ -33,6 +40,7 @@ const {
   selectConversation,
   createWorkspace,
   createConversation,
+  sendMessage,
 } = useWorkspaceWorkbench();
 </script>
 
@@ -106,10 +114,22 @@ const {
           :loading="isLoadingMessages"
           @retry="retryMessages"
         />
+
+        <PromptComposer
+          :disabled="!selectedConversation || isLoadingConversations || isLoadingMessages"
+          :error="sendMessageError"
+          :has-conversation="Boolean(selectedConversation)"
+          :pending="isSendingMessage"
+          :success-count="sendMessageSuccessCount"
+          @submit="sendMessage"
+        />
       </section>
 
       <InspectorPanel
         :conversation-count="conversations.length"
+        :last-assistant-message="lastAssistantMessage"
+        :last-run-metrics="lastRunMetrics"
+        :last-run-type="lastRunType"
         :message-count="messages.length"
         :selected-conversation="selectedConversation"
         :selected-workspace="selectedWorkspace"

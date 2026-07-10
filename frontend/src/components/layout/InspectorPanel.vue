@@ -1,5 +1,7 @@
 <script setup>
-defineProps({
+import { computed } from "vue";
+
+const props = defineProps({
   selectedWorkspace: {
     type: Object,
     default: null,
@@ -20,7 +22,79 @@ defineProps({
     type: Number,
     default: 0,
   },
+  lastAssistantMessage: {
+    type: Object,
+    default: null,
+  },
+  lastRunType: {
+    type: String,
+    default: "",
+  },
+  lastRunMetrics: {
+    type: Object,
+    default: null,
+  },
 });
+
+const hasAssistantMetrics = computed(() => {
+  const messageMetrics = props.lastAssistantMessage?.metrics;
+  return Boolean(messageMetrics && Object.keys(messageMetrics).length > 0);
+});
+
+const activeMetrics = computed(() => {
+  if (hasAssistantMetrics.value) {
+    return props.lastAssistantMessage.metrics;
+  }
+
+  return props.lastRunMetrics || {};
+});
+
+const hasMetrics = computed(() => Object.keys(activeMetrics.value).length > 0);
+const isAgentMetrics = computed(
+  () =>
+    (!hasAssistantMetrics.value && props.lastRunType === "agent") ||
+    Boolean(activeMetrics.value.agent_mode) ||
+    "step_count" in activeMetrics.value ||
+    "tool_call_count" in activeMetrics.value,
+);
+
+const metricRows = computed(() => {
+  const metrics = activeMetrics.value;
+  const rows = [];
+
+  if (typeof metrics.total_latency_ms === "number") {
+    rows.push(["Latency", `${metrics.total_latency_ms} ms`]);
+  }
+
+  if (isAgentMetrics.value) {
+    if (metrics.agent_mode) {
+      rows.push(["Mode", metrics.agent_mode]);
+    }
+    if (typeof metrics.step_count === "number") {
+      rows.push(["Steps", metrics.step_count]);
+    }
+    if (typeof metrics.tool_call_count === "number") {
+      rows.push(["Tools", metrics.tool_call_count]);
+    }
+    if (typeof metrics.source_count === "number") {
+      rows.push(["Sources", metrics.source_count]);
+    }
+    return rows;
+  }
+
+  if (typeof metrics.retrieved_count === "number") {
+    rows.push(["Retrieved", metrics.retrieved_count]);
+  }
+  if (typeof metrics.used_source_count === "number") {
+    rows.push(["Sources", metrics.used_source_count]);
+  }
+
+  return rows;
+});
+
+const agentInvocationId = computed(
+  () => activeMetrics.value.agent_invocation_id || "",
+);
 
 function formatDate(value) {
   if (!value) {
@@ -128,6 +202,32 @@ function formatDate(value) {
 
         <p v-else class="mt-4 text-sm leading-6 text-muted-foreground">
           No conversation selected.
+        </p>
+      </section>
+
+      <section class="rounded-md border border-border bg-background p-4">
+        <p class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Run Metrics
+        </p>
+
+        <div v-if="hasMetrics" class="mt-4 text-sm">
+          <dl class="grid grid-cols-2 gap-3">
+            <div v-for="[label, value] in metricRows" :key="label">
+              <dt class="text-xs text-muted-foreground">{{ label }}</dt>
+              <dd class="mt-1 font-medium">{{ value }}</dd>
+            </div>
+
+            <div v-if="agentInvocationId" class="col-span-2">
+              <dt class="text-xs text-muted-foreground">Invocation</dt>
+              <dd class="mt-1 break-all font-mono text-xs">
+                {{ agentInvocationId }}
+              </dd>
+            </div>
+          </dl>
+        </div>
+
+        <p v-else class="mt-4 text-sm leading-6 text-muted-foreground">
+          No assistant metrics yet.
         </p>
       </section>
     </div>

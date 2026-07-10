@@ -97,3 +97,42 @@ export function listConversationMessages(workspaceId, conversationId) {
     )}/messages`,
   );
 }
+
+export function sendChatMessage(workspaceId, conversationId, { message }) {
+  return request(
+    `/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(
+      conversationId,
+    )}/chat`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        message: message.trim(),
+      }),
+    },
+  );
+}
+
+export function runAgentMessage(
+  workspaceId,
+  conversationId,
+  { message, agentMode },
+) {
+  return request(
+    `/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(
+      conversationId,
+    )}/agent`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        message: message.trim(),
+        agent_mode: agentMode,
+      }),
+    },
+  );
+}
