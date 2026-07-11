@@ -10,6 +10,8 @@ Current scope:
 - Read saved conversation messages.
 - Send workspace chat and agent messages.
 - Show basic assistant run metrics.
+- Render assistant Markdown, highlighted code blocks, and copy feedback.
+- Inspect persisted RAG sources for the selected assistant message.
 
 ## Development
 

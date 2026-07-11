@@ -18,9 +18,17 @@ defineProps({
     type: Boolean,
     default: false,
   },
+  selectedMessageId: {
+    type: String,
+    default: "",
+  },
+  highlightedMessageId: {
+    type: String,
+    default: "",
+  },
 });
 
-defineEmits(["retry"]);
+defineEmits(["retry", "select"]);
 </script>
 
 <template>
@@ -63,7 +71,14 @@ defineEmits(["retry"]);
     </div>
 
     <div v-else class="space-y-4">
-      <MessageItem v-for="message in items" :key="message.id" :message="message" />
+      <MessageItem
+        v-for="message in items"
+        :key="message.id"
+        :highlighted="message.id === highlightedMessageId"
+        :message="message"
+        :selected="message.id === selectedMessageId"
+        @select="$emit('select', $event)"
+      />
     </div>
   </div>
 </template>

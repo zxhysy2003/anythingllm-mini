@@ -1,12 +1,26 @@
 <script setup>
 import { computed } from "vue";
 
+import MessageMarkdown from "./MessageMarkdown.vue";
+
 const props = defineProps({
   message: {
     type: Object,
     required: true,
   },
+  selected: {
+    type: Boolean,
+    default: false,
+  },
+  highlighted: {
+    type: Boolean,
+    default: false,
+  },
 });
+
+const emit = defineEmits(["select"]);
+
+const isAssistant = computed(() => props.message.role === "assistant");
 
 const metricChips = computed(() => {
   const metrics = props.message.metrics || {};
@@ -43,6 +57,12 @@ const providerLabel = computed(() =>
   [props.message.provider, props.message.model].filter(Boolean).join(" / "),
 );
 
+function selectAssistant() {
+  if (isAssistant.value) {
+    emit("select", props.message.id);
+  }
+}
+
 function formatDate(value) {
   if (!value) {
     return "";
@@ -63,6 +83,7 @@ function formatDate(value) {
 
 <template>
   <article
+    :id="`message-${message.id}`"
     class="flex"
     :class="message.role === 'user' ? 'justify-end' : 'justify-start'"
   >
@@ -71,8 +92,13 @@ function formatDate(value) {
       :class="
         message.role === 'user'
           ? 'bg-primary text-primary-foreground'
-          : 'border border-border bg-background text-foreground'
+          : [
+              'border border-border bg-background text-foreground transition',
+              selected ? 'ring-1 ring-accent' : '',
+              highlighted ? 'ring-2 ring-accent' : '',
+            ]
       "
+      @click="selectAssistant"
     >
       <div
         class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs"
@@ -81,7 +107,8 @@ function formatDate(value) {
         <span class="font-medium capitalize">{{ message.role }}</span>
         <span v-if="message.created_at">{{ formatDate(message.created_at) }}</span>
       </div>
-      <p class="mt-2 whitespace-pre-wrap break-words text-sm leading-6">
+      <MessageMarkdown v-if="isAssistant" class="mt-2" :content="message.content" />
+      <p v-else class="mt-2 whitespace-pre-wrap break-words text-sm leading-6">
         {{ message.content }}
       </p>
 

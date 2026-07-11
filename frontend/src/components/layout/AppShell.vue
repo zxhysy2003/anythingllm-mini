@@ -1,4 +1,6 @@
 <script setup>
+import { nextTick, onBeforeUnmount, ref } from "vue";
+
 import MessageList from "@/components/chat/MessageList.vue";
 import PromptComposer from "@/components/chat/PromptComposer.vue";
 import HealthBadge from "@/components/ui/HealthBadge.vue";
@@ -17,7 +19,8 @@ const {
   selectedConversationId,
   selectedWorkspace,
   selectedConversation,
-  lastAssistantMessage,
+  selectedAssistantMessageId,
+  selectedAssistantMessage,
   isLoadingWorkspaces,
   isLoadingConversations,
   isLoadingMessages,
@@ -38,10 +41,37 @@ const {
   retryMessages,
   selectWorkspace,
   selectConversation,
+  selectAssistantMessage,
   createWorkspace,
   createConversation,
   sendMessage,
 } = useWorkspaceWorkbench();
+
+const highlightedMessageId = ref("");
+let highlightTimer;
+
+function locateMessage(messageId) {
+  selectAssistantMessage(messageId);
+  highlightedMessageId.value = messageId;
+  window.clearTimeout(highlightTimer);
+
+  nextTick(() => {
+    document.getElementById(`message-${messageId}`)?.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+  });
+
+  highlightTimer = window.setTimeout(() => {
+    if (highlightedMessageId.value === messageId) {
+      highlightedMessageId.value = "";
+    }
+  }, 1800);
+}
+
+onBeforeUnmount(() => {
+  window.clearTimeout(highlightTimer);
+});
 </script>
 
 <template>
@@ -110,9 +140,12 @@ const {
         <MessageList
           :error="messagesError"
           :has-conversation="Boolean(selectedConversation)"
+          :highlighted-message-id="highlightedMessageId"
           :items="messages"
           :loading="isLoadingMessages"
+          :selected-message-id="selectedAssistantMessageId"
           @retry="retryMessages"
+          @select="selectAssistantMessage"
         />
 
         <PromptComposer
@@ -127,13 +160,14 @@ const {
 
       <InspectorPanel
         :conversation-count="conversations.length"
-        :last-assistant-message="lastAssistantMessage"
         :last-run-metrics="lastRunMetrics"
         :last-run-type="lastRunType"
         :message-count="messages.length"
         :selected-conversation="selectedConversation"
+        :selected-assistant-message="selectedAssistantMessage"
         :selected-workspace="selectedWorkspace"
         :workspace-count="workspaces.length"
+        @locate-message="locateMessage"
       />
     </main>
   </div>

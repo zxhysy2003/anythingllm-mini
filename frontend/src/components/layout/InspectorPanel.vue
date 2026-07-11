@@ -1,6 +1,8 @@
 <script setup>
 import { computed } from "vue";
 
+import SourceList from "@/components/chat/SourceList.vue";
+
 const props = defineProps({
   selectedWorkspace: {
     type: Object,
@@ -22,7 +24,7 @@ const props = defineProps({
     type: Number,
     default: 0,
   },
-  lastAssistantMessage: {
+  selectedAssistantMessage: {
     type: Object,
     default: null,
   },
@@ -36,14 +38,11 @@ const props = defineProps({
   },
 });
 
-const hasAssistantMetrics = computed(() => {
-  const messageMetrics = props.lastAssistantMessage?.metrics;
-  return Boolean(messageMetrics && Object.keys(messageMetrics).length > 0);
-});
+defineEmits(["locate-message"]);
 
 const activeMetrics = computed(() => {
-  if (hasAssistantMetrics.value) {
-    return props.lastAssistantMessage.metrics;
+  if (props.selectedAssistantMessage) {
+    return props.selectedAssistantMessage.metrics || {};
   }
 
   return props.lastRunMetrics || {};
@@ -52,7 +51,7 @@ const activeMetrics = computed(() => {
 const hasMetrics = computed(() => Object.keys(activeMetrics.value).length > 0);
 const isAgentMetrics = computed(
   () =>
-    (!hasAssistantMetrics.value && props.lastRunType === "agent") ||
+    (!props.selectedAssistantMessage && props.lastRunType === "agent") ||
     Boolean(activeMetrics.value.agent_mode) ||
     "step_count" in activeMetrics.value ||
     "tool_call_count" in activeMetrics.value,
@@ -230,6 +229,14 @@ function formatDate(value) {
           No assistant metrics yet.
         </p>
       </section>
+
+      <SourceList
+        :low-score-threshold="selectedWorkspace?.similarity_threshold"
+        :message-id="selectedAssistantMessage?.id || ''"
+        :metrics="selectedAssistantMessage?.metrics || {}"
+        :sources="selectedAssistantMessage?.sources || []"
+        @locate="$emit('locate-message', $event)"
+      />
     </div>
   </aside>
 </template>

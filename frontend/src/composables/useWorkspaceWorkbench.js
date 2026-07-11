@@ -24,6 +24,7 @@ export function useWorkspaceWorkbench() {
   const messages = ref([]);
   const selectedWorkspaceId = ref("");
   const selectedConversationId = ref("");
+  const selectedAssistantMessageId = ref("");
 
   const isLoadingWorkspaces = ref(false);
   const isLoadingConversations = ref(false);
@@ -57,15 +58,35 @@ export function useWorkspaceWorkbench() {
         (conversation) => conversation.id === selectedConversationId.value,
       ) || null,
   );
-  const lastAssistantMessage = computed(() => {
-    for (let index = messages.value.length - 1; index >= 0; index -= 1) {
-      if (messages.value[index].role === "assistant") {
-        return messages.value[index];
+  const selectedAssistantMessage = computed(
+    () =>
+      messages.value.find(
+        (message) =>
+          message.id === selectedAssistantMessageId.value && message.role === "assistant",
+      ) || null,
+  );
+
+  function selectLatestAssistantMessage(items) {
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      if (items[index].role === "assistant") {
+        selectedAssistantMessageId.value = items[index].id;
+        return;
       }
     }
 
-    return null;
-  });
+    selectedAssistantMessageId.value = "";
+  }
+
+  function reconcileSelectedAssistantMessage(items, { selectLatest = false } = {}) {
+    const selectedStillExists = items.some(
+      (message) =>
+        message.id === selectedAssistantMessageId.value && message.role === "assistant",
+    );
+
+    if (selectLatest || !selectedStillExists) {
+      selectLatestAssistantMessage(items);
+    }
+  }
 
   function clearCurrentRunState() {
     sendMessageRequestId += 1;
@@ -78,6 +99,7 @@ export function useWorkspaceWorkbench() {
   function clearMessageState() {
     messageRequestId += 1;
     messages.value = [];
+    selectedAssistantMessageId.value = "";
     messagesError.value = "";
     isLoadingMessages.value = false;
     clearCurrentRunState();
@@ -91,7 +113,11 @@ export function useWorkspaceWorkbench() {
     clearMessageState();
   }
 
-  async function loadMessages(workspaceId, conversationId) {
+  async function loadMessages(
+    workspaceId,
+    conversationId,
+    { selectLatestAssistant = false } = {},
+  ) {
     if (!workspaceId || !conversationId) {
       clearMessageState();
       return;
@@ -105,10 +131,14 @@ export function useWorkspaceWorkbench() {
       const payload = await listConversationMessages(workspaceId, conversationId);
       if (requestId === messageRequestId) {
         messages.value = payload;
+        reconcileSelectedAssistantMessage(payload, {
+          selectLatest: selectLatestAssistant,
+        });
       }
     } catch (exc) {
       if (requestId === messageRequestId) {
         messages.value = [];
+        selectedAssistantMessageId.value = "";
         messagesError.value = errorMessage(exc, "Failed to load messages.");
       }
     } finally {
@@ -131,7 +161,9 @@ export function useWorkspaceWorkbench() {
     if (selectionChanged) {
       clearCurrentRunState();
     }
-    await loadMessages(selectedWorkspaceId.value, conversationId);
+    await loadMessages(selectedWorkspaceId.value, conversationId, {
+      selectLatestAssistant: true,
+    });
   }
 
   async function loadConversations(workspaceId, { reloadMessages = true } = {}) {
@@ -378,7 +410,9 @@ export function useWorkspaceWorkbench() {
           : {}),
       };
 
-      await loadMessages(workspaceId, conversationId);
+      await loadMessages(workspaceId, conversationId, {
+        selectLatestAssistant: true,
+      });
 
       if (
         requestId !== sendMessageRequestId ||
@@ -424,6 +458,16 @@ export function useWorkspaceWorkbench() {
     return loadMessages(selectedWorkspaceId.value, selectedConversationId.value);
   }
 
+  function selectAssistantMessage(messageId) {
+    const message = messages.value.find(
+      (item) => item.id === messageId && item.role === "assistant",
+    );
+
+    if (message) {
+      selectedAssistantMessageId.value = message.id;
+    }
+  }
+
   onMounted(loadWorkspaces);
 
   return {
@@ -432,9 +476,10 @@ export function useWorkspaceWorkbench() {
     messages,
     selectedWorkspaceId,
     selectedConversationId,
+    selectedAssistantMessageId,
     selectedWorkspace,
     selectedConversation,
-    lastAssistantMessage,
+    selectedAssistantMessage,
     isLoadingWorkspaces,
     isLoadingConversations,
     isLoadingMessages,
@@ -455,6 +500,7 @@ export function useWorkspaceWorkbench() {
     retryMessages,
     selectWorkspace,
     selectConversation,
+    selectAssistantMessage,
     createWorkspace,
     createConversation,
     sendMessage,
