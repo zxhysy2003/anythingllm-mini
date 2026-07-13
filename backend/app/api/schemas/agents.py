@@ -1,11 +1,12 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
 from app.core.agent_executor import DEFAULT_AGENT_STEPS, MAX_AGENT_STEPS
 from app.core.agent_modes import AGENT_MODE_REACT_TEXT
 from app.services.rag_service import RAGSource
+from app.tools.artifacts import ToolSourceArtifact
 
 AgentModeRequest = Literal["react_text", "native_tool_calling"]
 
@@ -25,13 +26,21 @@ class WorkspaceAgentRequest(BaseModel):
         return message
 
 
+class AgentToolArtifactsRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    sources: list[ToolSourceArtifact]
+    outputs: dict[str, JsonValue]
+
+
 class AgentToolResultRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     ok: bool
     content: str
-    data: dict[str, Any]
+    artifacts: AgentToolArtifactsRead
     error: str | None
+    error_details: dict[str, JsonValue]
 
 
 class AgentStepRead(BaseModel):

@@ -113,7 +113,7 @@ def test_registry_run_validates_tool_input():
 
     assert result.ok is False
     assert result.error == "invalid_tool_input"
-    assert result.data["details"][0]["loc"] == ("value",)
+    assert result.error_details["details"][0]["loc"] == ["value"]
 
 
 def test_registry_run_wraps_tool_exceptions():
@@ -164,12 +164,12 @@ def test_registry_blocks_confirmation_required_tool_without_approval():
 
     assert result.ok is False
     assert result.error == TOOL_CONFIRMATION_REQUIRED
-    assert result.data["reason"] == "confirmation_required"
-    assert result.data["tool_name"] == tool.name
-    assert result.data["risk_level"] == "high"
-    assert result.data["side_effects"] is True
-    assert result.data["requires_confirmation"] is True
-    assert result.data["approval_id"] == build_tool_approval_id(
+    assert result.error_details["reason"] == "confirmation_required"
+    assert result.error_details["tool_name"] == tool.name
+    assert result.error_details["risk_level"] == "high"
+    assert result.error_details["side_effects"] is True
+    assert result.error_details["requires_confirmation"] is True
+    assert result.error_details["approval_id"] == build_tool_approval_id(
         tool_name=tool.name,
         action_input={"value": "hello"},
         context=context,
@@ -214,7 +214,7 @@ def test_registry_blocks_tool_when_agent_mode_is_not_allowed():
 
     assert result.ok is False
     assert result.error == TOOL_BLOCKED_BY_POLICY
-    assert result.data["reason"] == "agent_mode_not_allowed"
+    assert result.error_details["reason"] == "agent_mode_not_allowed"
 
 
 def test_registry_validates_tool_input_before_policy_check():
@@ -232,7 +232,7 @@ def test_registry_validates_tool_input_before_policy_check():
 
     assert result.ok is False
     assert result.error == "invalid_tool_input"
-    assert "approval_id" not in result.data
+    assert "approval_id" not in result.error_details
     assert tool.executed is False
 
 

@@ -101,8 +101,13 @@ ToolContext
 ToolResult
 - ok
 - content
-- data
+- artifacts
 - error
+- error_details
+
+ToolArtifacts
+- sources
+- outputs
 
 BaseTool
 - name
@@ -117,6 +122,16 @@ BaseTool
 - 防止重复工具名静默覆盖。
 - 列出工具描述和 Pydantic JSON schema，供 agent prompt 使用。
 - 统一处理未知工具、输入校验失败和工具运行异常。
+
+`content` 是唯一进入下一轮 LLM 推理的 observation。`artifacts` 是给 service、API、
+invocation persistence 和调试页消费的结构化产物；`error_details` 只保存 validation 和
+tool policy 等失败诊断信息。
+
+第一版 artifact contract 支持：
+
+- `sources`：类型化文档引用，不允许内部文件路径。
+- `outputs`：最多 20 个 JSON-safe 命名结果，总长度最多 8,000 字符。
+- 不支持二进制 attachment，也不允许本地路径或 path 字段进入 outputs。
 
 默认工具集合：
 
@@ -143,10 +158,14 @@ BaseTool
 {
   "ok": true,
   "content": "7",
-  "data": {
-    "result": 7
+  "artifacts": {
+    "sources": [],
+    "outputs": {
+      "result": 7
+    }
   },
-  "error": null
+  "error": null,
+  "error_details": {}
 }
 ```
 
@@ -159,7 +178,7 @@ BaseTool
 - `workspace_id` 只能来自 `ToolContext.workspace_id`。
 - LLM 不能通过工具输入覆盖 workspace 范围。
 - 工具只做检索，不调用 `build_context_prompt()`，不拼 system prompt，不调用 LLM。
-- 返回 sources 数据，但不返回 `upload_path` 或 `parsed_path`。
+- 通过 `artifacts.sources` 返回类型化 sources，但不返回 `upload_path` 或 `parsed_path`。
 
 调用路径：
 
@@ -188,7 +207,7 @@ AgentService
 2. 构造 `ToolContext`，把当前 `workspace_id` 和 `conversation_id` 注入 Agent executor。
 3. 根据请求的 `agent_mode` 选择 executor，并传入 Workspace 的 `system_prompt`、
    `chat_mode`、`temperature` 和历史。
-4. 从工具步骤中提取 `workspace_document_search` 返回的 sources。
+4. 从工具步骤的 `artifacts.sources` 中提取文档引用。
 5. 统计 agent metrics。
 6. 保存最终 user message 和 assistant message。
 
@@ -311,6 +330,7 @@ Agent 的失败边界分层处理：
 测试覆盖：
 
 - `backend/tests/test_tools_registry.py`：工具注册、查找、列表、未知工具、输入校验和异常包装。
+- `backend/tests/test_tool_artifacts.py`：artifact 默认值、JSON/数量/长度约束和路径安全边界。
 - `backend/tests/test_calculator_tool.py`：安全计算器的支持表达式、拒绝危险表达式、除零和大数边界。
 - `backend/tests/test_document_tools.py`：Workspace 文档搜索工具的 workspace 约束、参数透传、
   sources 返回和无结果行为。

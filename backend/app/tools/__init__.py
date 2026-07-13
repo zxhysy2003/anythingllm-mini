@@ -1,3 +1,4 @@
+from app.tools.artifacts import ToolArtifacts, ToolSourceArtifact
 from app.tools.calculator import CalculatorInput, CalculatorTool
 from app.tools.document_tools import (
     WorkspaceDocumentSearchInput,
@@ -22,11 +23,13 @@ __all__ = [
     "CalculatorTool",
     "TOOL_BLOCKED_BY_POLICY",
     "TOOL_CONFIRMATION_REQUIRED",
+    "ToolArtifacts",
     "ToolContext",
     "ToolDescription",
     "ToolRegistry",
     "ToolResult",
     "ToolRiskLevel",
+    "ToolSourceArtifact",
     "WorkspaceDocumentSearchInput",
     "WorkspaceDocumentSearchTool",
     "build_tool_approval_id",

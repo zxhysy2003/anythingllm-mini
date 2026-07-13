@@ -469,7 +469,13 @@ def test_delete_workspace_removes_documents_conversations_messages_and_files(
         action_input={"expression": "1 + 1"},
         observation="2",
         ok=True,
-        tool_result={"ok": True, "content": "2", "data": {"result": 2}},
+        tool_result={
+            "ok": True,
+            "content": "2",
+            "artifacts": {"sources": [], "outputs": {"result": 2}},
+            "error": None,
+            "error_details": {},
+        },
     )
     session.add(invocation)
     session.add(step)

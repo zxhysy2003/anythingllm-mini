@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field
 
 from app.core.rag import RetrievedChunk
 from app.services.rag_service import RAGService, rag_service
+from app.tools.artifacts import ToolArtifacts, ToolSourceArtifact
 from app.tools.registry import ToolContext, ToolResult
 
 NO_RELEVANT_CONTEXT = "No relevant workspace document context found."
@@ -45,28 +46,27 @@ class WorkspaceDocumentSearchTool:
             top_k=search_input.top_k,
             similarity_threshold=search_input.similarity_threshold,
         )
-        sources = [self._source_data(chunk) for chunk in chunks]
+        sources = [self._source_artifact(chunk) for chunk in chunks]
         if not sources:
             return ToolResult(
                 ok=True,
                 content=NO_RELEVANT_CONTEXT,
-                data={"sources": []},
             )
 
         return ToolResult(
             ok=True,
             content=self._content_summary(chunks),
-            data={"sources": sources},
+            artifacts=ToolArtifacts(sources=sources),
         )
 
-    def _source_data(self, chunk: RetrievedChunk) -> dict[str, str | int | float]:
-        return {
-            "document_id": chunk.document_id,
-            "original_filename": chunk.original_filename,
-            "chunk_index": chunk.chunk_index,
-            "text": chunk.text,
-            "score": chunk.score,
-        }
+    def _source_artifact(self, chunk: RetrievedChunk) -> ToolSourceArtifact:
+        return ToolSourceArtifact(
+            document_id=chunk.document_id,
+            original_filename=chunk.original_filename,
+            chunk_index=chunk.chunk_index,
+            text=chunk.text,
+            score=chunk.score,
+        )
 
     def _content_summary(self, chunks: list[RetrievedChunk]) -> str:
         lines = ["Found relevant workspace document context:"]

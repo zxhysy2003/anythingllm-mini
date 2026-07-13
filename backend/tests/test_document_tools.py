@@ -68,7 +68,7 @@ def test_document_search_uses_context_workspace_and_query_options():
 
     assert result.ok is True
     assert rag.retrieve_calls == [(" tools? ", workspace_id, 3, 0.8)]
-    assert result.data["sources"] == [
+    assert result.artifacts.model_dump(mode="json")["sources"] == [
         {
             "document_id": "a" * 32,
             "original_filename": "guide.txt",
@@ -78,8 +78,8 @@ def test_document_search_uses_context_workspace_and_query_options():
         }
     ]
     assert "guide.txt chunk 0" in result.content
-    assert "upload_path" not in str(result.data)
-    assert "parsed_path" not in str(result.data)
+    assert "upload_path" not in str(result.artifacts)
+    assert "parsed_path" not in str(result.artifacts)
 
 
 def test_document_search_returns_empty_success_when_no_chunks_match():
@@ -95,5 +95,6 @@ def test_document_search_returns_empty_success_when_no_chunks_match():
 
     assert result.ok is True
     assert result.content == NO_RELEVANT_CONTEXT
-    assert result.data == {"sources": []}
+    assert result.artifacts.sources == []
+    assert result.artifacts.outputs == {}
     assert rag.retrieve_calls == [("No match", workspace_id, None, None)]

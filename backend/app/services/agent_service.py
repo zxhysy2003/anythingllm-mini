@@ -2,7 +2,7 @@ from datetime import datetime
 from time import perf_counter
 from typing import Any
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
@@ -289,19 +289,10 @@ class AgentService:
         for step in steps:
             if step.tool_result is None:
                 continue
-            raw_sources = step.tool_result.data.get("sources")
-            if not isinstance(raw_sources, list):
-                continue
-            sources.extend(self._coerce_sources(raw_sources))
-        return sources
-
-    def _coerce_sources(self, raw_sources: list[Any]) -> list[RAGSource]:
-        sources = []
-        for raw_source in raw_sources:
-            try:
-                sources.append(RAGSource.model_validate(raw_source))
-            except ValidationError:
-                continue
+            sources.extend(
+                RAGSource.model_validate(source.model_dump(mode="json"))
+                for source in step.tool_result.artifacts.sources
+            )
         return sources
 
     def _elapsed_ms(self, started_at: float) -> int:

@@ -368,7 +368,12 @@ def test_agent_service_calls_calculator_then_returns_final_answer(session):
     step_records = list_steps(session, result.agent_invocation_id)
     assert len(step_records) == 1
     assert step_records[0].action == "calculator"
-    assert step_records[0].tool_result["data"] == {"result": 7}
+    assert step_records[0].tool_result["artifacts"] == {
+        "sources": [],
+        "outputs": {"result": 7},
+    }
+    assert step_records[0].tool_result["error_details"] == {}
+    assert "data" not in step_records[0].tool_result
 
     invocation = agent_service.get_invocation(
         session,
@@ -598,12 +603,19 @@ def test_agent_service_persists_confirmation_required_tool_step(session):
     assert result.metrics.failed_step_count == 1
     assert result.steps[0].error == TOOL_CONFIRMATION_REQUIRED
     assert result.steps[0].tool_result is not None
-    assert result.steps[0].tool_result.data["approval_id"].startswith("tool_approval_")
+    assert (
+        result.steps[0]
+        .tool_result.error_details["approval_id"]
+        .startswith("tool_approval_")
+    )
     assert tool.executed is False
     persisted_step = list_steps(session, result.agent_invocation_id)[0]
     assert persisted_step.ok is False
     assert persisted_step.error == TOOL_CONFIRMATION_REQUIRED
     assert persisted_step.tool_result["error"] == TOOL_CONFIRMATION_REQUIRED
+    assert persisted_step.tool_result["error_details"]["reason"] == (
+        "confirmation_required"
+    )
 
 
 def test_agent_service_runs_confirmation_required_tool_with_approval(session):

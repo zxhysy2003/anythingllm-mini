@@ -131,7 +131,7 @@ def test_native_executor_calls_calculator_then_returns_final_answer():
     assert result.steps[0].observation == "7"
     assert result.steps[0].ok is True
     assert result.steps[0].tool_result is not None
-    assert result.steps[0].tool_result.data == {"result": 7}
+    assert result.steps[0].tool_result.artifacts.outputs == {"result": 7}
     assert client.calls[1]["messages"][-2]["role"] == "assistant"
     assert client.calls[1]["messages"][-1] == {
         "role": "tool",
@@ -295,7 +295,11 @@ def test_native_executor_records_confirmation_required_tool_without_executing():
     assert result.steps[0].ok is False
     assert result.steps[0].error == TOOL_CONFIRMATION_REQUIRED
     assert result.steps[0].tool_result is not None
-    assert result.steps[0].tool_result.data["approval_id"].startswith("tool_approval_")
+    assert (
+        result.steps[0]
+        .tool_result.error_details["approval_id"]
+        .startswith("tool_approval_")
+    )
     assert tool.executed is False
     assert client.calls[1]["messages"][-1]["content"] == (
         "Tool blocked by policy: confirmation_required."

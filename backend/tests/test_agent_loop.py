@@ -180,7 +180,7 @@ def test_agent_calls_calculator_then_returns_final_answer():
     assert result.steps[0].action_input == {"expression": "1 + 2 * 3"}
     assert result.steps[0].observation == "7"
     assert result.steps[0].tool_result is not None
-    assert result.steps[0].tool_result.data == {"result": 7}
+    assert result.steps[0].tool_result.artifacts.outputs == {"result": 7}
     assert result.agent_mode == AGENT_MODE_REACT_TEXT
 
 
@@ -257,7 +257,11 @@ def test_agent_records_confirmation_required_tool_without_executing():
     assert result.steps[0].ok is False
     assert result.steps[0].error == TOOL_CONFIRMATION_REQUIRED
     assert result.steps[0].tool_result is not None
-    assert result.steps[0].tool_result.data["approval_id"].startswith("tool_approval_")
+    assert (
+        result.steps[0]
+        .tool_result.error_details["approval_id"]
+        .startswith("tool_approval_")
+    )
     assert tool.executed is False
 
 

@@ -19,6 +19,10 @@ def test_agent_ui_route_serves_static_page():
     assert "appendAgentEvent(streamEvent)" in response.text
     assert "tool_confirmation_required" in response.text
     assert "policySummary(step)" in response.text
+    assert "error_details" in response.text
+    assert "artifactSummary(step)" in response.text
+    assert "renderArtifacts(step)" in response.text
+    assert "Artifact payload" in response.text
     assert "approved_tool_call_ids" in response.text
     assert "loadTrace(invocationId, article, sources)" in response.text
     assert "invocationToRun(invocation, sources)" in response.text

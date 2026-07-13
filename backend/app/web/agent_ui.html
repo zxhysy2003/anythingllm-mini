@@ -1091,6 +1091,16 @@
             policyNode.append(policyLabel, ` ${policy}`);
             kv.append(policyNode);
           }
+          const artifactSummaryNode = document.createElement("div");
+          const artifactSummaryLabel = document.createElement("strong");
+          artifactSummaryLabel.textContent = "Artifacts:";
+          artifactSummaryNode.append(
+            artifactSummaryLabel,
+            ` ${artifactSummary(step)}`,
+          );
+          kv.append(artifactSummaryNode);
+
+          const artifacts = renderArtifacts(step);
 
           const details = document.createElement("details");
           const summary = document.createElement("summary");
@@ -1102,20 +1112,52 @@
             llm_output: step.llm_output,
           }));
 
-          node.append(head, kv, details);
+          node.append(head, kv);
+          if (artifacts) {
+            node.append(artifacts);
+          }
+          node.append(details);
           return node;
         }
 
         function policySummary(step) {
           const toolResult = step.tool_result || {};
-          const data = toolResult.data || {};
+          const errorDetails = toolResult.error_details || {};
           if (step.error === "tool_confirmation_required") {
-            return `requires confirmation (${data.approval_id || "approval id unavailable"})`;
+            return `requires confirmation (${errorDetails.approval_id || "approval id unavailable"})`;
           }
           if (step.error === "tool_blocked_by_policy") {
-            return `blocked by policy (${data.reason || "not allowed"})`;
+            return `blocked by policy (${errorDetails.reason || "not allowed"})`;
           }
           return "";
+        }
+
+        function artifactSummary(step) {
+          const artifacts = step.tool_result?.artifacts || {};
+          const sources = Array.isArray(artifacts.sources) ? artifacts.sources : [];
+          const outputs =
+            artifacts.outputs && typeof artifacts.outputs === "object"
+              ? artifacts.outputs
+              : {};
+          return `${sources.length} sources, ${Object.keys(outputs).length} outputs`;
+        }
+
+        function renderArtifacts(step) {
+          const artifacts = step.tool_result?.artifacts || {};
+          const sources = Array.isArray(artifacts.sources) ? artifacts.sources : [];
+          const outputs =
+            artifacts.outputs && typeof artifacts.outputs === "object"
+              ? artifacts.outputs
+              : {};
+          if (sources.length === 0 && Object.keys(outputs).length === 0) {
+            return null;
+          }
+
+          const details = document.createElement("details");
+          const summary = document.createElement("summary");
+          summary.textContent = "Artifact payload";
+          details.append(summary, jsonBlock({ sources, outputs }));
+          return details;
         }
 
         function renderSources(sources) {

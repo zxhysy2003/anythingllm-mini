@@ -181,6 +181,11 @@ def test_agent_endpoint_runs_agent_loop(agent_api):
     assert payload["model"] == "fake-agent-model"
     assert payload["steps"][0]["action"] == "calculator"
     assert payload["steps"][0]["observation"] == "7"
+    assert payload["steps"][0]["tool_result"]["artifacts"] == {
+        "sources": [],
+        "outputs": {"result": 7},
+    }
+    assert "data" not in payload["steps"][0]["tool_result"]
     assert payload["metrics"]["max_steps"] == 5
     assert payload["metrics"]["llm_call_count"] == 2
     assert payload["metrics"]["step_count"] == 1
@@ -323,7 +328,10 @@ def test_agent_stream_endpoint_streams_policy_blocked_step(agent_api):
     step = tool_finished["payload"]["step"]
     assert step["ok"] is False
     assert step["error"] == TOOL_CONFIRMATION_REQUIRED
-    assert step["tool_result"]["data"]["approval_id"].startswith("tool_approval_")
+    assert step["tool_result"]["error_details"]["approval_id"].startswith(
+        "tool_approval_"
+    )
+    assert "data" not in step["tool_result"]
     assert tool.executed is False
 
     finished = events[-1]["data"]
@@ -376,7 +384,12 @@ def test_agent_endpoint_runs_native_tool_calling_mode(agent_api):
     assert payload["provider"] == "fake"
     assert payload["model"] == "fake-native-model"
     assert payload["steps"][0]["action"] == "calculator"
-    assert payload["steps"][0]["tool_result"]["data"] == {"result": 7}
+    assert payload["steps"][0]["tool_result"]["artifacts"] == {
+        "sources": [],
+        "outputs": {"result": 7},
+    }
+    assert payload["steps"][0]["tool_result"]["error_details"] == {}
+    assert "data" not in payload["steps"][0]["tool_result"]
     assert payload["metrics"]["llm_call_count"] == 2
     assert payload["metrics"]["tool_call_count"] == 1
 
@@ -566,6 +579,12 @@ def test_agent_openapi_route_documents_agent_endpoint():
     assert "separate agent invocation record" in operation["description"]
     request_schema = schema["components"]["schemas"]["WorkspaceAgentRequest"]
     assert "approved_tool_call_ids" in request_schema["properties"]
+    tool_result_schema = schema["components"]["schemas"]["AgentToolResultRead"]
+    assert "artifacts" in tool_result_schema["properties"]
+    assert "error_details" in tool_result_schema["properties"]
+    assert "data" not in tool_result_schema["properties"]
+    artifact_schema = schema["components"]["schemas"]["AgentToolArtifactsRead"]
+    assert set(artifact_schema["properties"]) == {"sources", "outputs"}
 
     stream_operation = schema["paths"][
         "/workspaces/{workspace_id}/conversations/{conversation_id}/agent/stream"

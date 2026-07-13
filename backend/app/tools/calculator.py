@@ -5,6 +5,7 @@ from collections.abc import Callable
 
 from pydantic import BaseModel, Field
 
+from app.tools.artifacts import ToolArtifacts
 from app.tools.registry import ToolContext, ToolResult
 
 Number = int | float
@@ -61,7 +62,7 @@ class CalculatorTool:
         return ToolResult(
             ok=True,
             content=str(result),
-            data={"result": result},
+            artifacts=ToolArtifacts(outputs={"result": result}),
         )
 
     def _evaluate(self, node: ast.AST) -> Number:
