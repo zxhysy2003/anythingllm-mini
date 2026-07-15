@@ -42,7 +42,7 @@ AnythingLLM 时仍然值得学习的 Agent 开发内容。
 | Tool selection 和工具 prompt 预算 | 延后触发 | 默认工具超过 5 个后再评估 |
 | 长文档总结工具 | 未实现 | P2，先打稳 artifact contract |
 | Tool artifacts 统一返回 | 已实现第一版 | 保持合同稳定，后续工具复用 `sources` / `outputs` |
-| Agent replay 和评估样例 | 已有持久化底座，未形成能力 | 当前最高优先级，实现只读 fixture 导出 |
+| Agent replay 和评估样例 | 已实现第一版 | 保持 fixture 合同稳定，以合成评估样例覆盖回归边界 |
 | 轻量 Agent flow | 未实现 | P3，不进入当前最小 Agent loop 主干 |
 
 ## 对照来源
@@ -265,8 +265,8 @@ API、invocation step、SSE 和 `agent_ui.html` 共用同一合同。
 
 ### 7. Agent replay 和评估样例
 
-状态：已有底座但尚未形成能力。当前可以按 `agent_invocation_id` 读取持久化 invocation
-和 ordered steps，但还没有脱敏导出、fixture replay helper 或评估文档。
+状态：已实现第一版。已支持从本地 SQLite 按 `agent_invocation_id` 导出 JSON fixture，
+并使用 fixture 回放 parser、tool registry 输入校验、artifact source 快照和可推导 metrics。
 
 能力线：Observability and evaluation、Developer experience and documentation。
 
@@ -274,21 +274,25 @@ API、invocation step、SSE 和 `agent_ui.html` 共用同一合同。
 
 学习价值：
 
-- mini 已经保存 `agent_invocations` / `agent_steps`，但还没有把它们用于 replay 或评估。
 - Agent 最难稳定的是“同一个问题为什么这次调用了不同工具”。
 - 把真实 invocation 导出成可读样例，可以学习回归测试、prompt 调整和工具 schema 调整。
 
-建议边界：
+第一版边界：
 
-- 先做只读导出：把 invocation、steps、sources、metrics 写成 JSON fixture。
-- 支持一个 CLI 或测试 helper，不做在线自动评测平台。
-- 对真实 LLM 输出只做 smoke/evidence 记录；确定性断言仍使用 fake LLM。
+- `export_agent_replay` 只读导出 invocation、ordered steps、assistant sources snapshot 和
+  metrics；移除关系型 ID 与时间戳，并将 source document ID 匿名化。
+- `replay_agent_fixture` 不请求 LLM、不调用 `ToolRegistry.run()`；只验证 parser、工具存在与
+  输入校验、ToolResult 合同、invocation status/source 快照和从 steps 推导出的计数指标。
+- `react_text` 重放文本 parser；`native_tool_calling` 的 parser check 标记为不适用。
+- 真实 LLM 输出与 latency 仅是 evidence，不作为“答案必须完全一致”的硬断言。
+- 不做在线自动评测平台、HTTP 下载 API、Vue 页面或 `agent_ui.html` 入口。
 
 最小验收：
 
-- 能从某个 `agent_invocation_id` 导出完整可脱敏记录。
-- 能用 fixture 回放 parser / tool registry / metrics 汇总逻辑。
-- 文档记录如何从一次失败 invocation 变成一个回归测试。
+- [x] 能从某个 `agent_invocation_id` 导出完整的本地 fixture，且不包含 persistence ID 或时间戳。
+- [x] 能用 fixture 回放 parser / tool registry 输入校验 / artifact source / metrics 汇总逻辑。
+- [x] 有合成的 react success、react parser failure 和 native success 评估样例。
+- [x] 文档记录如何从一次失败 invocation 变成一个回归测试。
 
 ### 8. 轻量 Agent flow
 
@@ -335,33 +339,23 @@ flow。
 
 ## 推荐优先级
 
-### 已完成基础：事件流、tool policy 和 artifact contract
+### 已完成基础：事件流、tool policy、artifact contract 和 replay
 
 - Agent 事件流和 `agent_ui.html` timeline 已实现第一版。
 - Tool policy、静态风险元数据、policy gate 和 stateless approval id 已实现第一版。
 - Tool artifacts、JSON-safe outputs、类型化 sources 和最小 artifact inspector 已实现第一版。
+- Agent replay、只读 fixture 导出和三个合成评估样例已实现第一版。
 
 后续任务只维护和复用这些基础，不再把它们列为待启动工作。只有出现真实有副作用工具
 时，才补 `agent_ui.html` 的最小批准交互。
-
-### P1：让 invocation 可复用
-
-1. Agent replay / fixture 导出。
-
-推荐拆成一个只读、可独立 review 的小切片：
-
-1. 基于统一后的 invocation detail，实现按 `agent_invocation_id` 只读导出脱敏 JSON
-   fixture，以及 parser / tool registry / metrics 的确定性 replay helper。
-
-这项工作直接建立在已有 invocation、steps、ToolRegistry 和事件流上，不需要扩大 Agent
-自治范围。
 
 ### P2：再扩展 Agent 的交互能力
 
 1. Clarifying question 工具。
 2. 长文档总结工具。
 
-这两项会引入 invocation 继续执行、长任务进度和部分结果等新状态，应在 P1 稳定后再做。
+这两项会引入 invocation 继续执行、长任务进度和部分结果等新状态；现有 replay fixture
+可以为这些新状态增加确定性回归样例。
 人工调试交互仍只加入 `agent_ui.html`。
 
 ### 条件触发：Tool selection
@@ -380,15 +374,15 @@ flow。
 
 ## 下一步建议
 
-如果只选一个最适合马上做的后端切片，建议从 **Agent replay / fixture 导出** 开始：
+如果只选一个最适合马上做的后端切片，建议从 **Clarifying question 工具** 开始：
 
-- 当前 invocation/step 已持久化，artifact/error 合同也已稳定，具备可读导出的数据基础。
-- replay 能把真实失败运行转成 parser、tool registry 和 metrics 的确定性回归样例。
-- 第一版只做脱敏 JSON fixture 和测试 helper，不需要在线评估平台或真实 LLM 硬断言。
+- 当前已有 invocation persistence、artifact/error 合同和 replay fixture，能够记录
+  `needs_input` / continue 状态的回归边界。
+- 这项能力会首次学习“同一 invocation 暂停后继续执行”的状态合同，且仍可限制为单个结构化问题。
 
 建议实现边界：
 
-1. 从某个 `agent_invocation_id` 只读导出 invocation、ordered steps、artifacts 和 metrics。
-2. 导出前移除不必要的内部标识，并保持 sources/outputs 的安全字段边界。
-3. 使用 fixture 回放 parser、tool registry 和 metrics 汇总逻辑。
-4. 文档记录如何把一次失败 invocation 转成回归测试。
+1. 只支持单个 `text` 或 `choice` 澄清问题。
+2. Agent 返回 `needs_input`，不在 HTTP 请求中等待用户回答。
+3. 用户携带 invocation ID 与回答继续执行，并将暂停/继续过程写入 steps。
+4. 为正常回答、跳过/超时和重复继续请求分别补 replay fixture。
