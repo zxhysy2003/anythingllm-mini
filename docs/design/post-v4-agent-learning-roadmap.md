@@ -1,5 +1,8 @@
 # Post-V4 Agent 学习路线
 
+术语遵循 [Agent 文档术语（Terminology）](../tech-notes/agent-terminology.md)。本文中
+“合同”统一写作 `contract`，“澄清”统一写作 `clarification`；代码字段、状态和 endpoint 保持原样。
+
 ## 定位
 
 本文档记录在 `anythingllm-mini` 已完成最小 V4 Agent Loop 后，继续对照原版
@@ -11,11 +14,14 @@ AnythingLLM 时仍然值得学习的 Agent 开发内容。
 - `react_text` ReAct 文本执行器。
 - DeepSeek/OpenAI-compatible `native_tool_calling` 执行器。
 - 本地 `ToolRegistry`、`ToolContext`、`ToolResult`。
-- `calculator` 和 `workspace_document_search` 两个低风险工具。
-- `agent_invocations` / `agent_steps` 独立持久化。
-- assistant message metrics 中的轻量 `agent_invocation_id` 和汇总指标。
+- `calculator`、`workspace_document_search` 和 `request_user_input` 三个低风险工具。
+- `agent_invocations` / `agent_steps` 独立 persistence。
+- Agent conversation message metrics 中的轻量 `agent_invocation_id` 和汇总指标；完成时写在
+  assistant message，pause 时写在已保存的 user message，供调试页恢复同一 invocation。
 - SSE-format over POST 的 Agent 事件流。
 - backend-first tool policy、静态风险元数据和 stateless approval id。
+- 单次、结构化的 `request_user_input` clarification tool，以及同一 invocation 的 pause/continue。
+- 本地 replay fixture 导出和确定性 replay。
 - 一个用于替代重复 `curl`、展示事件 timeline 和 invocation detail 的薄 Agent 调试页：
   `backend/app/web/agent_ui.html`。
 
@@ -24,25 +30,25 @@ AnythingLLM 时仍然值得学习的 Agent 开发内容。
 
 ## 本路线图的范围
 
-本文档只规划 `backend/` 下的 Agent 能力，以及配套的后端 API、持久化、测试和文档。
+本文档只规划 `backend/` 下的 Agent capabilities，以及配套的 backend API、persistence、tests 和 docs。
 
 - Agent 运行过程的显示和人工调试继续使用 `backend/app/web/agent_ui.html`。
 - `agent_ui.html` 是后端 Agent 的调试工具，不按产品前端标准扩展。
 - 本路线图不包含 Vue 前端接入、页面组件拆分、交互样式或正式前端状态管理。
-- 如果某个后端能力需要最小人工交互，例如批准工具或回答澄清问题，只在
-  `agent_ui.html` 中增加足以验证后端合同的薄交互。
+- 如果某个 backend capability 需要最小人工交互，例如 tool approval 或 answer clarification，只在
+  `agent_ui.html` 中增加足以验证 backend contract 的薄交互。
 
 ## 当前进度总览
 
 | 能力切片 | 当前状态 | 下一步判断 |
 | --- | --- | --- |
-| Agent 事件流和实时 introspection | 已实现第一版 | 保持事件合同稳定，不继续扩展 WebSocket 或 token 流 |
+| Agent 事件流和实时 introspection | 已实现第一版 | 保持 event contract 稳定，不继续扩展 WebSocket 或 token 流 |
 | Tool policy、风险等级和用户批准 | 已实现第一版 | 等真实有副作用工具出现后，再补完整批准交互 |
-| Clarifying question 工具 | 未实现 | P2，依赖 invocation 可继续执行的状态合同 |
+| Clarifying question 工具 | 已实现第一版 | 保持单次 clarification 和同一 invocation continue 的 lifecycle contract |
 | Tool selection 和工具 prompt 预算 | 延后触发 | 默认工具超过 5 个后再评估 |
 | 长文档总结工具 | 未实现 | P2，先打稳 artifact contract |
-| Tool artifacts 统一返回 | 已实现第一版 | 保持合同稳定，后续工具复用 `sources` / `outputs` |
-| Agent replay 和评估样例 | 已实现第一版 | 保持 fixture 合同稳定，以合成评估样例覆盖回归边界 |
+| Tool artifacts 统一返回 | 已实现第一版 | 保持 artifact contract 稳定，后续工具复用 `sources` / `outputs` |
+| Agent replay 和评估样例 | 已实现第一版 | 保持 fixture contract 稳定，以 synthetic fixtures 覆盖 regression 边界 |
 | 轻量 Agent flow | 未实现 | P3，不进入当前最小 Agent loop 主干 |
 
 ## 对照来源
@@ -75,12 +81,12 @@ AnythingLLM 时仍然值得学习的 Agent 开发内容。
 
 能力线：Observability and evaluation、API and UX contracts。
 
-影响阶段：V4 Agent loop，外加跨阶段 UI/API 合同。
+影响阶段：V4 Agent loop，外加跨阶段 UI/API contract。
 
 学习价值：
 
-- 当前 mini 同时保留同步 Agent API 和只读事件流 API，便于对比最终结果合同与运行中
-  事件合同。
+- 当前 mini 同时保留同步 Agent API 和只读事件流 API，便于对比最终 result contract 与运行中
+  event contract。
 - AnythingLLM 会通过 websocket 把 status、tool approval、clarification、usage metrics
   等事件推给调用端。
 - mini 已经完成“事件模型”这一层，后续重点是保持事件顺序、失败语义和最终结果一致。
@@ -89,7 +95,7 @@ AnythingLLM 时仍然值得学习的 Agent 开发内容。
 
 - 已落地的只读事件流固定为：`agent_started`、`llm_started`、`llm_finished`、
   `tool_started`、`tool_finished`、`parse_error`、`max_steps_reached`、
-  `agent_finished`、`agent_failed`。
+  `agent_needs_input`、`agent_finished`、`agent_failed`。
 - 事件内容来自当前 executor 的显式步骤，不暴露隐藏 chain-of-thought。
 - `agent_ui.html` 可以显示运行中状态、工具 timeline、失败 step 和最终 invocation 结果。
 
@@ -108,7 +114,7 @@ AnythingLLM 时仍然值得学习的 Agent 开发内容。
 
 状态：已实现第一版 backend-first tool policy。当前支持工具静态风险元数据、执行前
 policy gate、stateless approval id 和可解释 failed step；仍不做真实高危工具、
-持久化 pending approval、多用户权限系统或完整 approval workflow。
+pending approval persistence、多用户权限系统或完整 approval workflow。
 
 能力线：Safety and boundaries、Agent capabilities。
 
@@ -125,15 +131,15 @@ policy gate、stateless approval id 和可解释 failed step；仍不做真实�
 
 - 工具已经具有静态元数据：`risk_level`、`requires_confirmation`、`side_effects`、
   `allowed_in_agent_modes`。
-- 当前两个默认工具保持低风险、无需确认。
+- 当前三个默认工具保持低风险、无需确认。
 - `ToolRegistry.run()` 在执行前完成 agent mode 和 confirmation policy 判断。
-- 缺少批准时返回可解释 `ToolResult`，并由当前 Agent step/invocation 持久化。
+- 缺少批准时返回可解释 `ToolResult`，并由当前 Agent step/invocation `persistence` 记录。
 
 剩余边界：
 
 - 当前没有真实高风险或有副作用工具，confirmation-required 工具只在测试中验证。
 - 只有新增有副作用工具时，才在 `agent_ui.html` 增加最小批准和重新提交交互。
-- 不做持久化 pending approval、多用户权限系统、whitelist 管理或完整审批平台。
+- 不做 pending approval persistence、多用户权限系统、whitelist 管理或完整审批平台。
 
 最小验收：
 
@@ -143,8 +149,8 @@ policy gate、stateless approval id 和可解释 failed step；仍不做真实�
 
 ### 3. Clarifying question 工具
 
-状态：未实现。当前没有澄清工具、`needs_input` invocation 状态或继续同一个 invocation
-的后端 API。
+状态：已实现第一版。`request_user_input` 是一个低风险、无副作用的 default tool；两个 executor
+都会在收到 unresolved interaction 时 pause 同一 invocation，而不是让 HTTP 请求等待用户。
 
 能力线：Agent capabilities、API and UX contracts。
 
@@ -153,27 +159,37 @@ policy gate、stateless approval id 和可解释 failed step；仍不做真实�
 学习价值：
 
 - 当前 mini 的 Agent 无法在执行中向用户补充提问，只能一次性回答或失败。
-- AnythingLLM 把澄清问题建成 `request-user-input` 工具，并设置 per-turn 上限和超时。
+- AnythingLLM 把 clarification 建成 `request-user-input` tool，并设置 per-turn 上限和 timeout。
 - 这适合学习 Agent 和用户交互的边界：模型不能随便用自然语言“等用户回复”，而要通过结构化工具发起请求。
 
-建议边界：
+第一版边界：
 
-- 先支持单个结构化问题：`text` 或 `choice`。
-- HTTP 同步 API 不长时间阻塞；返回 `needs_input` 状态，由 `agent_ui.html` 带
-  `invocation_id` 和用户回答继续。
-- 每次 invocation 限制最多 1-3 个澄清问题。
-- 超时或跳过时，Agent 必须继续或给出清晰失败，而不是无限等待。
+- 每个 invocation 最多一次结构化 `text` 或 `choice` clarification；choice 有 2–8 个唯一选项。
+- 初始和 continue API 都返回 lifecycle response：`needs_input`、`completed` 或
+  `max_steps_reached`。`needs_input` 只有 `pending_input`，没有 assistant answer。
+- `POST .../agent-invocations/{invocation_id}/continue` 和对应 stream endpoint 使用同一个
+  invocation 的累计 LLM/step 预算；choice answer 必须精确匹配，支持 skip。
+- 十分钟没有回答时，下一次 continue 自动把 `timed_out` observation 写回原 step 后继续；
+  没有后台超时任务。
+- native mode 只有在本轮唯一 tool call 是 clarification tool 时才 pause；和其他 tool call 混合时，
+  所有该轮调用都记录为未执行的明确失败。
+- pause record 立即保存原 user message、steps、metrics、pending input 和最小 resume state，
+  但不创建 assistant message；完成后才在同一 invocation 创建唯一 assistant message。
+- continue 通过带 15 分钟 lease 的原子 claim 防止两个请求同时恢复同一 invocation；数据库 partial
+  unique index 保证同一 conversation 最多一个 `needs_input` 记录，竞争写入回滚并返回 conflict；最终
+  保存再以 claim ID fencing，过期的旧请求不能覆盖新请求。
 
 最小验收：
 
-- Agent 调用澄清工具后不会执行其他工具。
-- 用户回答后能继续同一个 invocation。
-- 跳过/超时会写入 step，并返回可解释 observation。
+- [x] 两个 executor 在 clarification tool 后 pause，且不把 interaction 视为 artifact。
+- [x] 用户回答、skip 或 timeout 后能继续同一个 invocation，并保持累计预算。
+- [x] pause 状态没有 assistant message；重复 continue 和同一 conversation 的新 run 被拒绝。
+- [x] lifecycle API/SSE、invocation detail、`agent_ui.html` 和 replay 都能表达 pending 状态。
 
 ### 4. Tool selection 和工具 prompt 预算
 
-状态：延后触发。当前默认工具只有 `calculator` 和 `workspace_document_search`，两个
-executor 都注入全部工具，暂时没有 selector 或工具数量 metrics。
+状态：延后触发。当前默认工具有 `calculator`、`workspace_document_search` 和
+`request_user_input`，两个 executor 都注入全部工具，暂时没有 selector 或工具数量 metrics。
 
 能力线：Agent capabilities、Observability and evaluation。
 
@@ -195,7 +211,7 @@ executor 都注入全部工具，暂时没有 selector 或工具数量 metrics�
 
 最小验收：
 
-- selector 不影响当前两个默认工具。
+- selector 不影响当前三个默认工具。
 - 当工具集变大时，prompt 中只出现被选中的工具。
 - invocation metrics 能看到 `available_tool_count` 和 `selected_tool_count`。
 
@@ -233,7 +249,7 @@ executor 都注入全部工具，暂时没有 selector 或工具数量 metrics�
 
 状态：已实现第一版。`ToolResult` 已使用显式 `artifacts` 和 `error_details` 取代宽泛的
 `data`；calculator 和 document search 已分别迁移到 `outputs` 和 `sources`，AgentService、
-API、invocation step、SSE 和 `agent_ui.html` 共用同一合同。
+API、invocation step、SSE 和 `agent_ui.html` 共用同一 artifact contract。
 
 能力线：API and UX contracts、Observability and evaluation。
 
@@ -242,8 +258,8 @@ API、invocation step、SSE 和 `agent_ui.html` 共用同一合同。
 学习价值：
 
 - mini 已把给 LLM 的 `content` observation 与给后端基础设施的结构化 artifacts 分开。
-- AnythingLLM 会缓冲 citations、outputs、attachments，并由 chat-history 插件一起持久化。
-- mini 不必先支持真实二进制附件，但值得统一“工具除了文本 observation 还能产出结构化 artifact”的合同。
+- AnythingLLM 会缓冲 citations、outputs、attachments，并由 chat-history 插件一起 `persist`。
+- mini 不必先支持真实二进制附件，但值得统一“工具除了文本 observation 还能产出结构化 artifact”的 contract。
 
 已实现边界：
 
@@ -253,20 +269,20 @@ API、invocation step、SSE 和 `agent_ui.html` 共用同一合同。
 - `agent_ui.html` 通过 invocation detail 读取 artifact，不把完整 artifact 塞进普通
   conversation history。
 - 第一版不支持二进制 attachment，只为未来扩展保留清楚边界。
-- 本次直接替换旧 `data` API，并通过完整重置本地运行数据结束旧 invocation 合同；数据库
+- 本次直接替换旧 `data` API，并通过完整重置本地运行数据结束旧 invocation contract；数据库
   表结构和 Alembic revision 不变。
 
 最小验收：
 
 - [x] 文档搜索工具通过 `artifacts.sources` 返回 sources，top-level assistant sources 不变。
 - [x] calculator 通过 `artifacts.outputs["result"]` 返回机器可读结果。
-- [x] 同步 API、invocation detail 和 SSE step 使用同一 artifact/error 合同。
+- [x] 同步 API、invocation detail 和 SSE step 使用同一 artifact/error contract。
 - [x] 不可信路径、隐藏文件路径、内部解析路径不出现在 Agent API 或调试页中。
 
 ### 7. Agent replay 和评估样例
 
 状态：已实现第一版。已支持从本地 SQLite 按 `agent_invocation_id` 导出 JSON fixture，
-并使用 fixture 回放 parser、tool registry 输入校验、artifact source 快照和可推导 metrics。
+并使用 fixture replay parser、tool registry 输入校验、artifact source snapshot 和可推导 metrics。
 
 能力线：Observability and evaluation、Developer experience and documentation。
 
@@ -282,16 +298,16 @@ API、invocation step、SSE 和 `agent_ui.html` 共用同一合同。
 - `export_agent_replay` 只读导出 invocation、ordered steps、assistant sources snapshot 和
   metrics；移除关系型 ID 与时间戳，并将 source document ID 匿名化。
 - `replay_agent_fixture` 不请求 LLM、不调用 `ToolRegistry.run()`；只验证 parser、工具存在与
-  输入校验、ToolResult 合同、invocation status/source 快照和从 steps 推导出的计数指标。
+  输入校验、ToolResult/clarification contract、invocation status/source snapshot 和从 steps 推导出的计数 metrics。
 - `react_text` 重放文本 parser；`native_tool_calling` 的 parser check 标记为不适用。
-- 真实 LLM 输出与 latency 仅是 evidence，不作为“答案必须完全一致”的硬断言。
+- 真实 LLM 输出与 latency 仅是 evidence，不作为“答案必须完全一致”的 hard assertion。
 - 不做在线自动评测平台、HTTP 下载 API、Vue 页面或 `agent_ui.html` 入口。
 
 最小验收：
 
 - [x] 能从某个 `agent_invocation_id` 导出完整的本地 fixture，且不包含 persistence ID 或时间戳。
-- [x] 能用 fixture 回放 parser / tool registry 输入校验 / artifact source / metrics 汇总逻辑。
-- [x] 有合成的 react success、react parser failure 和 native success 评估样例。
+- [x] 能用 fixture replay parser / tool registry 输入校验 / artifact source / metrics 汇总逻辑。
+- [x] 有 synthetic react/native success、parser failure，以及 answered/skip/timeout clarification evaluation fixtures。
 - [x] 文档记录如何从一次失败 invocation 变成一个回归测试。
 
 ### 8. 轻量 Agent flow
@@ -339,30 +355,30 @@ flow。
 
 ## 推荐优先级
 
-### 已完成基础：事件流、tool policy、artifact contract 和 replay
+### 已完成基础：事件流、tool policy、artifact contract、clarification 和 replay
 
 - Agent 事件流和 `agent_ui.html` timeline 已实现第一版。
 - Tool policy、静态风险元数据、policy gate 和 stateless approval id 已实现第一版。
 - Tool artifacts、JSON-safe outputs、类型化 sources 和最小 artifact inspector 已实现第一版。
-- Agent replay、只读 fixture 导出和三个合成评估样例已实现第一版。
+- 单次 clarification、同一 invocation pause/continue、`agent_needs_input` 和 `agent_ui.html` 调试交互已实现第一版。
+- Agent replay、只读 fixture 导出和 clarification 覆盖在内的 synthetic evaluation fixtures 已实现第一版。
 
 后续任务只维护和复用这些基础，不再把它们列为待启动工作。只有出现真实有副作用工具
 时，才补 `agent_ui.html` 的最小批准交互。
 
-### P2：再扩展 Agent 的交互能力
+### P2：长任务工具
 
-1. Clarifying question 工具。
-2. 长文档总结工具。
+1. 长文档总结工具。
 
-这两项会引入 invocation 继续执行、长任务进度和部分结果等新状态；现有 replay fixture
-可以为这些新状态增加确定性回归样例。
+该切片会引入进度和部分结果等新状态；现有 lifecycle/replay fixture 可以为这些状态增加
+确定性 regression fixtures。
 人工调试交互仍只加入 `agent_ui.html`。
 
 ### 条件触发：Tool selection
 
 - 默认注册工具超过 5 个，或实际观察到工具 schema 明显挤占 prompt 时再启动。
 - 启动后先做确定性 top N selector 和工具数量 metrics，不做 embedding reranker。
-- 在触发条件出现前，不为当前两个默认工具增加选择抽象。
+- 在触发条件出现前，不为当前三个默认工具增加选择抽象。
 
 ### P3：最后学习工作流和平台化能力
 
@@ -374,15 +390,15 @@ flow。
 
 ## 下一步建议
 
-如果只选一个最适合马上做的后端切片，建议从 **Clarifying question 工具** 开始：
+如果只选一个最适合马上做的后端切片，建议从 **长文档总结工具** 开始：
 
-- 当前已有 invocation persistence、artifact/error 合同和 replay fixture，能够记录
-  `needs_input` / continue 状态的回归边界。
-- 这项能力会首次学习“同一 invocation 暂停后继续执行”的状态合同，且仍可限制为单个结构化问题。
+- 当前已有 artifact contract、lifecycle state 和 replay fixture，能够记录工具进度、source
+  snapshot 与部分结果的 regression 边界。
+- 它能把 V1/V2 的已解析文档能力和 V4 工具边界连起来，但仍可限制为同步、小范围切片。
 
 建议实现边界：
 
-1. 只支持单个 `text` 或 `choice` 澄清问题。
-2. Agent 返回 `needs_input`，不在 HTTP 请求中等待用户回答。
-3. 用户携带 invocation ID 与回答继续执行，并将暂停/继续过程写入 steps。
-4. 为正常回答、跳过/超时和重复继续请求分别补 replay fixture。
+1. 只允许总结当前 workspace 内已解析成功的单个文档。
+2. 小文档直接摘要；长文档先限定 chunk 数、上下文预算和明确失败边界。
+3. 每个分块结果都使用现有 artifact/source contract，避免把内部路径暴露给 API。
+4. 为小文档、超限和部分结果补合成 replay fixture。

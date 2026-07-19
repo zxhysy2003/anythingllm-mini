@@ -16,6 +16,12 @@ from app.tools.registry import (
     build_tool_approval_id,
     create_default_tool_registry,
 )
+from app.tools.interactions import (
+    ClarificationRequest,
+    ClarificationResolution,
+    PendingClarification,
+    ToolInteraction,
+)
 
 __all__ = [
     "BaseTool",
@@ -26,6 +32,10 @@ __all__ = [
     "ToolArtifacts",
     "ToolContext",
     "ToolDescription",
+    "ClarificationRequest",
+    "ClarificationResolution",
+    "PendingClarification",
+    "ToolInteraction",
     "ToolRegistry",
     "ToolResult",
     "ToolRiskLevel",

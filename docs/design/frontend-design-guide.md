@@ -199,7 +199,8 @@ Chat / Agent：
 - 开发阶段前端只调用相对路径，例如 `/workspaces`，由 Vite proxy 转发到 FastAPI。
 - 不在前端拼接本地 `storage/` 路径；后端本来就不暴露 `upload_path` 和 `parsed_path`。
 - `agent/stream` 是 SSE-format event stream，不是 token-by-token answer stream。
-- assistant message 的 `metrics.agent_invocation_id` 是打开 invocation detail 的入口。
+- 完成后的 assistant message，或 pause 时已保存的 user message，其 `metrics.agent_invocation_id`
+  都是打开 invocation detail、恢复 pending clarification 的入口；字段语义遵循 Agent lifecycle contract。
 - sources 展示文件名、chunk、score 和文本摘要，不展示本地文件系统路径。
 
 ## 6. 分阶段实现计划

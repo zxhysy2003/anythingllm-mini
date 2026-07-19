@@ -68,7 +68,7 @@ flowchart TD
     I --> J["数据库结构到达 head"]
 ```
 
-当前项目已经存在三份迁移：
+当前项目已经存在五份迁移：
 
 1. `0001_baseline_v3_schema`
    - 表示 V3 时期已有的基础表结构。
@@ -78,11 +78,23 @@ flowchart TD
 2. `0002_add_message_metrics`
    - 在 `conversation_messages` 表上新增 `metrics` JSON 列。
    - 默认值是 `{}`。
-   - 对应 V3.5 中 Workspace chat metrics 的持久化需求。
+   - 对应 V3.5 中 Workspace chat metrics 的 persistence 需求。
 
 3. `0003_add_agent_invocations_and_steps`
    - 新增 `agent_invocations` 和 `agent_steps` 表。
-   - 对应 post-V4 Agent invocation / step 独立持久化需求。
+   - 对应 post-V4 Agent invocation / step 独立 persistence 需求。
+
+4. `0004_add_agent_pending_input`
+   - 将 `agent_invocations.assistant_message_id` 和 `ended_at` 改为可空，并新增
+     `pending_input`、`resume_state` JSON 列。
+   - 对应单次 clarification 时“先 pause 保存、回答后 continue 同一 invocation”的 lifecycle 需求；SQLite 使用
+     Alembic batch mode 保留已有 completed invocation。
+
+5. `0005_add_agent_invocation_claims`
+   - 在 `conversations` 新增 `agent_execution_claim_id` 和 lease 时间，用于在初始 Agent run 或 continue 前原子
+     claim 同一个 conversation，并让进程中断后的 claim 可以过期回收。
+   - 新增 SQLite partial unique index：同一个 conversation 最多只能有一个
+     `status='needs_input'` 的 invocation，避免 concurrent pause 时出现两个待回答记录。
 
 处理旧库的流程：
 

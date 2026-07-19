@@ -5,6 +5,7 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from app.tools.artifacts import ToolArtifacts
+from app.tools.interactions import ToolInteraction
 
 ToolRiskLevel = Literal["low", "medium", "high"]
 TOOL_RISK_LEVELS = {"low", "medium", "high"}
@@ -18,6 +19,8 @@ class ToolContext(BaseModel):
     conversation_id: str | None = None
     agent_mode: str | None = None
     approved_tool_call_ids: set[str] = Field(default_factory=set)
+    clarification_count: int = Field(default=0, ge=0)
+    remaining_llm_calls: int | None = Field(default=None, ge=0)
 
 
 class ToolResult(BaseModel):
@@ -26,6 +29,7 @@ class ToolResult(BaseModel):
     ok: bool
     content: str
     artifacts: ToolArtifacts = Field(default_factory=ToolArtifacts)
+    interaction: ToolInteraction | None = None
     error: str | None = None
     error_details: dict[str, JsonValue] = Field(default_factory=dict)
 
@@ -185,10 +189,12 @@ class ToolRegistry:
 
 def create_default_tool_registry() -> ToolRegistry:
     from app.tools.calculator import CalculatorTool
+    from app.tools.clarifying_question import ClarifyingQuestionTool
     from app.tools.document_tools import WorkspaceDocumentSearchTool
 
     registry = ToolRegistry()
     registry.register(CalculatorTool())
+    registry.register(ClarifyingQuestionTool())
     registry.register(WorkspaceDocumentSearchTool())
     return registry
 

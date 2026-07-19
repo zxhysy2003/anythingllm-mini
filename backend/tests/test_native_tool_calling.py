@@ -7,6 +7,8 @@ from app.core.agent_modes import AGENT_MODE_NATIVE_TOOL_CALLING
 from app.core.llm import DeepSeekToolCall, DeepSeekToolCallResult
 from app.core.native_tool_calling import DeepSeekNativeToolCallingExecutor
 from app.tools.calculator import CalculatorTool
+from app.tools.clarifying_question import ClarifyingQuestionTool
+from app.tools.interactions import ClarificationResolution
 from app.tools.registry import (
     TOOL_CONFIRMATION_REQUIRED,
     ToolContext,
@@ -138,6 +140,113 @@ def test_native_executor_calls_calculator_then_returns_final_answer():
         "tool_call_id": "call-1",
         "content": "7",
     }
+
+
+def test_native_executor_pauses_and_continues_clarification():
+    client = ScriptedToolCallingClient(
+        [
+            tool_result(
+                "",
+                tool_calls=[
+                    tool_call(
+                        "request_user_input",
+                        (
+                            '{"question": "Which report?", "input_type": '
+                            '"choice", "choices": ["annual", "market"]}'
+                        ),
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            tool_result("I will use the selected report."),
+        ]
+    )
+    executor = DeepSeekNativeToolCallingExecutor(
+        llm=client,
+        tool_registry=make_registry(ClarifyingQuestionTool()),
+    )
+
+    paused = asyncio.run(executor.run("summarize", ToolContext(), max_steps=2))
+
+    assert paused.answer is None
+    assert paused.pending_interaction is not None
+    assert paused.resume_state is not None
+    pending_step = paused.steps[0]
+    resolved_result = pending_step.tool_result.model_copy(
+        update={
+            "content": "User answered clarification: annual",
+            "interaction": pending_step.tool_result.interaction.model_copy(
+                update={
+                    "resolution": ClarificationResolution(
+                        kind="answered",
+                        answer="annual",
+                    )
+                }
+            ),
+        }
+    )
+    resolved_step = pending_step.model_copy(
+        update={"observation": resolved_result.content, "tool_result": resolved_result}
+    )
+
+    completed = asyncio.run(
+        executor.run(
+            "summarize",
+            ToolContext(),
+            max_steps=2,
+            initial_steps=[resolved_step],
+            initial_llm_call_count=paused.llm_call_count,
+            continuation_observation=resolved_result.content,
+            resume_state=paused.resume_state,
+        )
+    )
+
+    assert completed.answer == "I will use the selected report."
+    assert completed.llm_call_count == 2
+    assert client.calls[1]["messages"][-1] == {
+        "role": "tool",
+        "tool_call_id": "call-1",
+        "content": "User answered clarification: annual",
+    }
+
+
+def test_native_executor_blocks_mixed_clarification_tool_calls():
+    capture_tool = CaptureContextTool()
+    client = ScriptedToolCallingClient(
+        [
+            tool_result(
+                "",
+                tool_calls=[
+                    tool_call(
+                        "request_user_input",
+                        '{"question": "Which?", "input_type": "text"}',
+                        call_id="call-1",
+                    ),
+                    tool_call(
+                        "capture_context",
+                        '{"value": "should-not-run"}',
+                        call_id="call-2",
+                    ),
+                ],
+                finish_reason="tool_calls",
+            ),
+            tool_result("I cannot ask that way."),
+        ]
+    )
+    executor = DeepSeekNativeToolCallingExecutor(
+        llm=client,
+        tool_registry=make_registry(ClarifyingQuestionTool(), capture_tool),
+    )
+
+    result = asyncio.run(executor.run("choose", ToolContext(), max_steps=2))
+
+    assert result.pending_interaction is None
+    assert result.answer == "I cannot ask that way."
+    assert [step.error for step in result.steps] == [
+        "clarification_must_be_single_tool_call",
+        "clarification_must_be_single_tool_call",
+    ]
+    assert capture_tool.workspace_id is None
 
 
 def test_native_executor_emits_tool_events():

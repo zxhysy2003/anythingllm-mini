@@ -9,6 +9,7 @@ AgentEventType = Literal[
     "tool_started",
     "tool_finished",
     "parse_error",
+    "agent_needs_input",
     "agent_finished",
     "agent_failed",
     "max_steps_reached",

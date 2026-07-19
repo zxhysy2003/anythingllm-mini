@@ -1,13 +1,15 @@
 import asyncio
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic import BaseModel, Field
-from sqlmodel import select
+from sqlmodel import Session, select
 
 from app.core.agent_executor import (
     DEFAULT_AGENT_STEPS,
     MAX_STEPS_ANSWER,
     AgentRunResult,
+    AgentStep,
 )
 from app.core.agent_loop import ReactTextAgentExecutor
 from app.core.agent_modes import (
@@ -18,13 +20,16 @@ from app.core.rag import RetrievedChunk
 from app.models.agent import (
     AGENT_INVOCATION_STATUS_COMPLETED,
     AGENT_INVOCATION_STATUS_MAX_STEPS_REACHED,
+    AGENT_INVOCATION_STATUS_NEEDS_INPUT,
     AgentInvocation,
     AgentStepRecord,
 )
-from app.models.conversation import ConversationMessage
-from app.services.agent_service import AgentService
+from app.models.conversation import Conversation, ConversationMessage
+import app.services.agent_service as agent_service_module
+from app.services.agent_service import AGENT_EXECUTION_CLAIM_LEASE, AgentService
 from app.services.chat_service import ChatResult
 from app.services.exceptions import (
+    AgentInvocationConflictError,
     AgentInvocationNotFoundError,
     ConversationNotFoundError,
     WorkspaceNotFoundError,
@@ -32,7 +37,9 @@ from app.services.exceptions import (
 )
 from app.services.workspace_service import WorkspaceService
 from app.tools.calculator import CalculatorTool
+from app.tools.clarifying_question import ClarifyingQuestionTool
 from app.tools.document_tools import WorkspaceDocumentSearchTool
+from app.tools.interactions import ClarificationRequest, ToolInteraction
 from app.tools.registry import (
     TOOL_CONFIRMATION_REQUIRED,
     ToolContext,
@@ -49,9 +56,17 @@ from tests.fakes import (
 
 
 class ScriptedAgentChat:
-    def __init__(self, responses: list[str]):
+    def __init__(
+        self,
+        responses: list[str],
+        *,
+        block_call_index: int | None = None,
+    ):
         self.responses = responses
         self.calls = []
+        self.block_call_index = block_call_index
+        self.call_started = asyncio.Event()
+        self.release_call = asyncio.Event()
 
     async def chat(self, message, system_prompt, history, temperature):
         self.calls.append(
@@ -63,6 +78,9 @@ class ScriptedAgentChat:
             }
         )
         response_index = len(self.calls) - 1
+        if response_index == self.block_call_index:
+            self.call_started.set()
+            await self.release_call.wait()
         return ChatResult(
             message=message,
             answer=self.responses[response_index],
@@ -151,13 +169,13 @@ def make_registry(*tools):
     return registry
 
 
-def make_services(session, responses, *, registry=None, rag=None):
+def make_services(session, responses, *, registry=None, rag=None, agent_chat=None):
     rag = rag or FakeRAGService()
     workspace_service = WorkspaceService(
         rag=rag,
         chat=FakeChatService(echo=True),
     )
-    agent_chat = ScriptedAgentChat(responses)
+    agent_chat = agent_chat or ScriptedAgentChat(responses)
     agent_service = AgentService(
         workspace=workspace_service,
         chat=agent_chat,
@@ -196,7 +214,13 @@ def list_messages(session):
     return list(session.exec(statement).all())
 
 
+def enable_foreign_key_checks(session):
+    session.connection().exec_driver_sql("PRAGMA foreign_keys = ON")
+    assert session.connection().exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
+
+
 def test_agent_service_returns_final_answer_and_saves_exchange(session):
+    enable_foreign_key_checks(session)
     agent_service, _, agent_chat, workspace, conversation = make_services(
         session,
         ["Final Answer: no tool needed"],
@@ -382,7 +406,848 @@ def test_agent_service_calls_calculator_then_returns_final_answer(session):
         result.agent_invocation_id,
     )
     assert invocation.status == AGENT_INVOCATION_STATUS_COMPLETED
+    assert invocation.answer == "the result is 7"
     assert invocation.steps == result.steps
+
+
+def test_agent_service_pauses_and_continues_same_invocation(session):
+    enable_foreign_key_checks(session)
+
+    agent_service, _, agent_chat, workspace, conversation = make_services(
+        session,
+        [
+            (
+                "Action: request_user_input\nAction Input: "
+                '{"question": "Which report?", "input_type": "choice", '
+                '"choices": ["annual", "market"]}'
+            ),
+            "Final Answer: I will use the selected report.",
+        ],
+        registry=make_registry(ClarifyingQuestionTool()),
+    )
+
+    paused = asyncio.run(
+        agent_service.run_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "summarize a report",
+        )
+    )
+
+    assert paused.status == AGENT_INVOCATION_STATUS_NEEDS_INPUT
+    assert paused.answer is None
+    assert paused.pending_input is not None
+    assert paused.pending_input.choices == ["annual", "market"]
+    assert [message.role for message in list_messages(session)] == ["user"]
+    invocation = session.get(AgentInvocation, paused.agent_invocation_id)
+    assert invocation is not None
+    assert invocation.assistant_message_id is None
+    assert invocation.ended_at is None
+    assert invocation.status == AGENT_INVOCATION_STATUS_NEEDS_INPUT
+    session.refresh(conversation)
+    assert conversation.agent_execution_claim_id is None
+    assert conversation.agent_execution_claimed_at is None
+
+    completed = asyncio.run(
+        agent_service.continue_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            paused.agent_invocation_id,
+            answer="annual",
+        )
+    )
+
+    assert completed.agent_invocation_id == paused.agent_invocation_id
+    assert completed.status == AGENT_INVOCATION_STATUS_COMPLETED
+    assert completed.answer == "I will use the selected report."
+    assert completed.metrics.llm_call_count == 2
+    assert len(completed.steps) == 1
+    interaction = completed.steps[0].tool_result.interaction
+    assert interaction is not None
+    assert interaction.resolution is not None
+    assert interaction.resolution.kind == "answered"
+    assert interaction.resolution.answer == "annual"
+    assert [message.role for message in list_messages(session)] == ["user", "assistant"]
+    assert "User answered clarification: annual" in agent_chat.calls[1]["message"]
+    invocation = session.get(AgentInvocation, paused.agent_invocation_id)
+    assert invocation is not None
+    session.refresh(conversation)
+    assert conversation.agent_execution_claim_id is None
+    assert conversation.agent_execution_claimed_at is None
+
+
+def test_agent_service_rejects_continuation_already_claimed_by_another_request(session):
+    agent_service, _, agent_chat, workspace, conversation = make_services(
+        session,
+        [
+            (
+                "Action: request_user_input\nAction Input: "
+                '{"question": "Which report?", "input_type": "text"}'
+            ),
+            "Final Answer: resumed after the claim was released.",
+        ],
+        registry=make_registry(ClarifyingQuestionTool()),
+    )
+    paused = asyncio.run(
+        agent_service.run_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "summarize a report",
+        )
+    )
+    invocation = session.get(AgentInvocation, paused.agent_invocation_id)
+    assert invocation is not None
+    agent_service._claim_agent_execution(
+        session,
+        conversation,
+        "other-request",
+        pending_invocation_id=invocation.id,
+    )
+
+    with pytest.raises(AgentInvocationConflictError, match="active Agent execution"):
+        asyncio.run(
+            agent_service.continue_in_conversation(
+                session,
+                workspace.id,
+                conversation.id,
+                paused.agent_invocation_id,
+                answer="annual",
+            )
+        )
+
+    assert len(agent_chat.calls) == 1
+    agent_service._release_agent_execution(
+        session,
+        workspace.id,
+        conversation.id,
+        "other-request",
+    )
+
+    completed = asyncio.run(
+        agent_service.continue_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            paused.agent_invocation_id,
+            answer="annual",
+        )
+    )
+
+    assert completed.answer == "resumed after the claim was released."
+
+
+def test_agent_service_rejects_concurrent_initial_run_before_second_llm_call(session):
+    agent_chat = ScriptedAgentChat(
+        ["Final Answer: first request completed"],
+        block_call_index=0,
+    )
+    agent_service, _, _, workspace, conversation = make_services(
+        session,
+        [],
+        registry=make_registry(),
+        agent_chat=agent_chat,
+    )
+
+    async def run_concurrently():
+        first_run = asyncio.create_task(
+            agent_service.run_in_conversation(
+                session,
+                workspace.id,
+                conversation.id,
+                "first request",
+            )
+        )
+        await asyncio.wait_for(agent_chat.call_started.wait(), timeout=1)
+        with Session(session.get_bind()) as second_session:
+            with pytest.raises(
+                AgentInvocationConflictError, match="active Agent execution"
+            ):
+                await agent_service.run_in_conversation(
+                    second_session,
+                    workspace.id,
+                    conversation.id,
+                    "second request",
+                )
+        assert len(agent_chat.calls) == 1
+        agent_chat.release_call.set()
+        return await first_run
+
+    result = asyncio.run(run_concurrently())
+
+    assert result.answer == "first request completed"
+    session.refresh(conversation)
+    assert conversation.agent_execution_claim_id is None
+
+
+def test_agent_service_claim_blocks_initial_run_when_pending_state_appears(session):
+    agent_service, _, _, workspace, conversation = make_services(
+        session,
+        [
+            (
+                "Action: request_user_input\nAction Input: "
+                '{"question": "Which report?", "input_type": "text"}'
+            ),
+        ],
+        registry=make_registry(ClarifyingQuestionTool()),
+    )
+    paused = asyncio.run(
+        agent_service.run_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "summarize a report",
+        )
+    )
+
+    with pytest.raises(AgentInvocationConflictError, match="active Agent execution"):
+        agent_service._claim_agent_execution(session, conversation, "late-initial-run")
+
+    session.refresh(conversation)
+    assert conversation.agent_execution_claim_id is None
+    assert session.get(AgentInvocation, paused.agent_invocation_id) is not None
+
+
+def test_agent_service_returns_conflict_when_stale_execution_late_pauses(session):
+    agent_service, _, _, workspace, conversation = make_services(
+        session,
+        [
+            (
+                "Action: request_user_input\nAction Input: "
+                '{"question": "Which report?", "input_type": "text"}'
+            ),
+        ],
+        registry=make_registry(ClarifyingQuestionTool()),
+    )
+    current_pause = asyncio.run(
+        agent_service.run_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "current request",
+        )
+    )
+    current_invocation = session.get(AgentInvocation, current_pause.agent_invocation_id)
+    assert current_invocation is not None
+    agent_service._claim_agent_execution(
+        session,
+        conversation,
+        "new-request",
+        pending_invocation_id=current_invocation.id,
+    )
+
+    request = ClarificationRequest(
+        question="Which format should I use?",
+        input_type="text",
+    )
+    stale_result = AgentRunResult(
+        message="stale request",
+        answer=None,
+        steps=[
+            AgentStep(
+                step_index=1,
+                llm_output=(
+                    "Action: request_user_input\nAction Input: "
+                    '{"question": "Which format should I use?", '
+                    '"input_type": "text"}'
+                ),
+                action="request_user_input",
+                action_input=request.model_dump(),
+                observation="Clarification requested. Waiting for the user response.",
+                ok=True,
+                tool_result=ToolResult(
+                    ok=True,
+                    content="Clarification requested. Waiting for the user response.",
+                    interaction=ToolInteraction(
+                        kind="clarification",
+                        request=request,
+                    ),
+                ),
+            )
+        ],
+        agent_mode=AGENT_MODE_REACT_TEXT,
+        provider="fake",
+        model="fake-agent-model",
+        llm_call_count=1,
+        max_steps_reached=False,
+        pending_interaction=ToolInteraction(kind="clarification", request=request),
+    )
+    metrics = agent_service._metrics(
+        max_steps=3,
+        agent_result=stale_result,
+        total_latency_ms=1,
+    )
+
+    with pytest.raises(AgentInvocationConflictError, match="claim was lost"):
+        agent_service._save_pending_invocation(
+            session=session,
+            workspace_id=workspace.id,
+            conversation=conversation,
+            user_content="stale request",
+            agent_result=stale_result,
+            metrics=metrics,
+            pending_input=agent_service._pending_input(stale_result),
+            resume_state=agent_service_module.AgentResumeState(
+                system_prompt="Answer as an agent.",
+                history=[],
+                temperature=0.2,
+            ),
+            started_at=datetime.now(UTC),
+            execution_claim_id="old-request",
+        )
+
+    session.expire_all()
+    assert [message.content for message in list_messages(session)] == [
+        "current request"
+    ]
+    assert [invocation.id for invocation in list_invocations(session)] == [
+        current_invocation.id
+    ]
+    persisted_conversation = session.get(Conversation, conversation.id)
+    assert persisted_conversation is not None
+    assert persisted_conversation.agent_execution_claim_id == "new-request"
+
+
+def test_agent_service_preserves_title_updated_by_concurrent_normal_chat(session):
+    agent_service, _, _, workspace, conversation = make_services(
+        session,
+        [],
+        registry=make_registry(),
+    )
+    agent_service._claim_agent_execution(session, conversation, "agent-request")
+
+    with Session(session.get_bind()) as normal_chat_session:
+        normal_chat_conversation = normal_chat_session.get(
+            Conversation, conversation.id
+        )
+        assert normal_chat_conversation is not None
+        normal_chat_conversation.title = "normal chat title"
+        normal_chat_session.add(normal_chat_conversation)
+        normal_chat_session.commit()
+
+    agent_service._release_agent_execution_in_transaction(
+        session,
+        conversation,
+        "agent-request",
+        user_content="agent request title",
+    )
+    session.commit()
+    session.expire_all()
+
+    persisted_conversation = session.get(Conversation, conversation.id)
+    assert persisted_conversation is not None
+    assert persisted_conversation.title == "normal chat title"
+    assert persisted_conversation.agent_execution_claim_id is None
+
+
+def test_agent_service_rejects_initial_run_while_continue_is_executing(session):
+    agent_chat = ScriptedAgentChat(
+        [
+            (
+                "Action: request_user_input\nAction Input: "
+                '{"question": "Which report?", "input_type": "text"}'
+            ),
+            "Final Answer: resumed request completed",
+        ],
+        block_call_index=1,
+    )
+    agent_service, _, _, workspace, conversation = make_services(
+        session,
+        [],
+        registry=make_registry(ClarifyingQuestionTool()),
+        agent_chat=agent_chat,
+    )
+    paused = asyncio.run(
+        agent_service.run_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "summarize a report",
+        )
+    )
+
+    async def run_concurrently():
+        continuation = asyncio.create_task(
+            agent_service.continue_in_conversation(
+                session,
+                workspace.id,
+                conversation.id,
+                paused.agent_invocation_id,
+                answer="annual",
+            )
+        )
+        await asyncio.wait_for(agent_chat.call_started.wait(), timeout=1)
+        with Session(session.get_bind()) as second_session:
+            with pytest.raises(
+                AgentInvocationConflictError, match="waiting for user input"
+            ):
+                await agent_service.run_in_conversation(
+                    second_session,
+                    workspace.id,
+                    conversation.id,
+                    "new request",
+                )
+            with pytest.raises(
+                AgentInvocationConflictError, match="active Agent execution"
+            ):
+                await agent_service.continue_in_conversation(
+                    second_session,
+                    workspace.id,
+                    conversation.id,
+                    paused.agent_invocation_id,
+                    answer="annual",
+                )
+        assert len(agent_chat.calls) == 2
+        agent_chat.release_call.set()
+        return await continuation
+
+    result = asyncio.run(run_concurrently())
+
+    assert result.answer == "resumed request completed"
+    session.refresh(conversation)
+    assert conversation.agent_execution_claim_id is None
+
+
+def test_agent_service_heartbeat_renews_a_slow_execution_claim(session, monkeypatch):
+    monkeypatch.setattr(
+        agent_service_module,
+        "AGENT_EXECUTION_CLAIM_LEASE",
+        timedelta(milliseconds=100),
+    )
+    monkeypatch.setattr(
+        agent_service_module,
+        "AGENT_EXECUTION_CLAIM_HEARTBEAT_INTERVAL",
+        timedelta(milliseconds=20),
+    )
+    agent_chat = ScriptedAgentChat(
+        ["Final Answer: slow request completed"],
+        block_call_index=0,
+    )
+    agent_service, _, _, workspace, conversation = make_services(
+        session,
+        [],
+        registry=make_registry(),
+        agent_chat=agent_chat,
+    )
+
+    async def run_slow_execution():
+        first_run = asyncio.create_task(
+            agent_service.run_in_conversation(
+                session,
+                workspace.id,
+                conversation.id,
+                "slow request",
+            )
+        )
+        await asyncio.wait_for(agent_chat.call_started.wait(), timeout=1)
+        await asyncio.sleep(0.16)
+        with Session(session.get_bind()) as second_session:
+            with pytest.raises(
+                AgentInvocationConflictError, match="active Agent execution"
+            ):
+                await agent_service.run_in_conversation(
+                    second_session,
+                    workspace.id,
+                    conversation.id,
+                    "competing request",
+                )
+        assert len(agent_chat.calls) == 1
+        agent_chat.release_call.set()
+        return await first_run
+
+    result = asyncio.run(run_slow_execution())
+
+    assert result.answer == "slow request completed"
+
+
+def test_agent_service_rolls_back_when_execution_claim_is_taken_over(
+    session,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        agent_service_module,
+        "AGENT_EXECUTION_CLAIM_HEARTBEAT_INTERVAL",
+        timedelta(milliseconds=10),
+    )
+    agent_chat = ScriptedAgentChat(
+        ["Final Answer: stale request completed"],
+        block_call_index=0,
+    )
+    agent_service, _, _, workspace, conversation = make_services(
+        session,
+        [],
+        registry=make_registry(),
+        agent_chat=agent_chat,
+    )
+
+    async def run_and_take_over_claim():
+        first_run = asyncio.create_task(
+            agent_service.run_in_conversation(
+                session,
+                workspace.id,
+                conversation.id,
+                "stale request",
+            )
+        )
+        await asyncio.wait_for(agent_chat.call_started.wait(), timeout=1)
+        with Session(session.get_bind()) as takeover_session:
+            taken_over = takeover_session.get(Conversation, conversation.id)
+            assert taken_over is not None
+            taken_over.agent_execution_claim_id = "new-request"
+            taken_over.agent_execution_claimed_at = datetime.now(UTC)
+            takeover_session.add(taken_over)
+            takeover_session.commit()
+        await asyncio.sleep(0.04)
+        agent_chat.release_call.set()
+        with pytest.raises(AgentInvocationConflictError, match="claim was lost"):
+            await first_run
+
+    asyncio.run(run_and_take_over_claim())
+
+    session.expire_all()
+    persisted_conversation = session.get(Conversation, conversation.id)
+    assert persisted_conversation is not None
+    assert persisted_conversation.agent_execution_claim_id == "new-request"
+    assert list_messages(session) == []
+    assert session.exec(select(AgentInvocation)).all() == []
+
+
+def test_agent_service_reclaims_an_expired_execution_claim(session):
+    agent_service, _, agent_chat, workspace, conversation = make_services(
+        session,
+        [
+            (
+                "Action: request_user_input\nAction Input: "
+                '{"question": "Which report?", "input_type": "text"}'
+            ),
+            "Final Answer: recovered from an interrupted continuation.",
+        ],
+        registry=make_registry(ClarifyingQuestionTool()),
+    )
+    paused = asyncio.run(
+        agent_service.run_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "summarize a report",
+        )
+    )
+    conversation.agent_execution_claim_id = "interrupted-request"
+    conversation.agent_execution_claimed_at = (
+        datetime.now(UTC) - AGENT_EXECUTION_CLAIM_LEASE
+    )
+    session.add(conversation)
+    session.commit()
+
+    completed = asyncio.run(
+        agent_service.continue_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            paused.agent_invocation_id,
+            answer="annual",
+        )
+    )
+
+    assert completed.answer == "recovered from an interrupted continuation."
+    assert len(agent_chat.calls) == 2
+
+
+def test_agent_service_fences_an_execution_that_lost_its_claim(session):
+    agent_service, _, _, workspace, conversation = make_services(
+        session,
+        [
+            (
+                "Action: request_user_input\nAction Input: "
+                '{"question": "Which report?", "input_type": "text"}'
+            ),
+        ],
+        registry=make_registry(ClarifyingQuestionTool()),
+    )
+    paused = asyncio.run(
+        agent_service.run_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "summarize a report",
+        )
+    )
+    invocation = session.get(AgentInvocation, paused.agent_invocation_id)
+    assert invocation is not None
+    agent_service._claim_agent_execution(
+        session,
+        conversation,
+        "old-request",
+        pending_invocation_id=invocation.id,
+    )
+    conversation.agent_execution_claimed_at = (
+        datetime.now(UTC) - AGENT_EXECUTION_CLAIM_LEASE
+    )
+    session.add(conversation)
+    session.commit()
+    agent_service._claim_agent_execution(
+        session,
+        conversation,
+        "new-request",
+        pending_invocation_id=invocation.id,
+    )
+
+    agent_result = AgentRunResult(
+        message="summarize a report",
+        answer="stale answer",
+        steps=[],
+        agent_mode=AGENT_MODE_REACT_TEXT,
+        provider="fake",
+        model="fake-agent-model",
+        llm_call_count=2,
+        max_steps_reached=False,
+    )
+    metrics = agent_service._metrics(
+        max_steps=invocation.max_steps,
+        agent_result=agent_result,
+        total_latency_ms=1,
+    )
+
+    with pytest.raises(AgentInvocationConflictError, match="claim was lost"):
+        agent_service._finalize_invocation(
+            session=session,
+            invocation=invocation,
+            conversation=conversation,
+            agent_result=agent_result,
+            metrics=metrics,
+            sources=[],
+            ended_at=datetime.now(UTC),
+            execution_claim_id="old-request",
+        )
+
+    session.expire_all()
+    invocation = session.get(AgentInvocation, paused.agent_invocation_id)
+    assert invocation is not None
+    assert invocation.status == AGENT_INVOCATION_STATUS_NEEDS_INPUT
+    session.refresh(conversation)
+    assert conversation.agent_execution_claim_id == "new-request"
+    assert [message.role for message in list_messages(session)] == ["user"]
+
+
+def test_agent_service_releases_execution_claim_after_initial_run_error(session):
+    agent_service, _, agent_chat, workspace, conversation = make_services(
+        session,
+        [],
+        registry=make_registry(),
+    )
+
+    with pytest.raises(IndexError):
+        asyncio.run(
+            agent_service.run_in_conversation(
+                session,
+                workspace.id,
+                conversation.id,
+                "first attempt",
+            )
+        )
+
+    session.refresh(conversation)
+    assert conversation.agent_execution_claim_id is None
+    assert list_messages(session) == []
+
+    agent_chat.responses.extend(["unused", "Final Answer: retry completed"])
+    completed = asyncio.run(
+        agent_service.run_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "retry",
+        )
+    )
+
+    assert completed.answer == "retry completed"
+
+
+def test_agent_service_releases_execution_claim_after_resume_error(session):
+    agent_service, _, agent_chat, workspace, conversation = make_services(
+        session,
+        [
+            (
+                "Action: request_user_input\nAction Input: "
+                '{"question": "Which report?", "input_type": "text"}'
+            ),
+        ],
+        registry=make_registry(ClarifyingQuestionTool()),
+    )
+    paused = asyncio.run(
+        agent_service.run_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "summarize a report",
+        )
+    )
+
+    with pytest.raises(IndexError):
+        asyncio.run(
+            agent_service.continue_in_conversation(
+                session,
+                workspace.id,
+                conversation.id,
+                paused.agent_invocation_id,
+                answer="annual",
+            )
+        )
+
+    invocation = session.get(AgentInvocation, paused.agent_invocation_id)
+    assert invocation is not None
+    assert invocation.status == AGENT_INVOCATION_STATUS_NEEDS_INPUT
+    session.refresh(conversation)
+    assert conversation.agent_execution_claim_id is None
+    assert [message.role for message in list_messages(session)] == ["user"]
+
+    agent_chat.responses.extend(
+        ["unused response for the failed retry", "Final Answer: recovered."]
+    )
+    completed = asyncio.run(
+        agent_service.continue_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            paused.agent_invocation_id,
+            answer="annual",
+        )
+    )
+
+    assert completed.answer == "recovered."
+
+
+def test_agent_service_releases_execution_claim_when_resume_is_cancelled(session):
+    agent_service, _, agent_chat, workspace, conversation = make_services(
+        session,
+        [
+            (
+                "Action: request_user_input\nAction Input: "
+                '{"question": "Which report?", "input_type": "text"}'
+            ),
+        ],
+        registry=make_registry(ClarifyingQuestionTool()),
+    )
+    paused = asyncio.run(
+        agent_service.run_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "summarize a report",
+        )
+    )
+
+    async def cancelled_chat(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    agent_chat.chat = cancelled_chat
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            agent_service.continue_in_conversation(
+                session,
+                workspace.id,
+                conversation.id,
+                paused.agent_invocation_id,
+                answer="annual",
+            )
+        )
+
+    invocation = session.get(AgentInvocation, paused.agent_invocation_id)
+    assert invocation is not None
+    assert invocation.status == AGENT_INVOCATION_STATUS_NEEDS_INPUT
+    session.refresh(conversation)
+    assert conversation.agent_execution_claim_id is None
+    assert conversation.agent_execution_claimed_at is None
+
+
+def test_agent_service_rejects_invalid_choice_and_second_run_while_paused(session):
+    agent_service, _, _, workspace, conversation = make_services(
+        session,
+        [
+            (
+                "Action: request_user_input\nAction Input: "
+                '{"question": "Which?", "input_type": "choice", '
+                '"choices": ["a", "b"]}'
+            )
+        ],
+        registry=make_registry(ClarifyingQuestionTool()),
+    )
+    paused = asyncio.run(
+        agent_service.run_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "choose",
+        )
+    )
+
+    with pytest.raises(ValueError, match="must match"):
+        asyncio.run(
+            agent_service.continue_in_conversation(
+                session,
+                workspace.id,
+                conversation.id,
+                paused.agent_invocation_id,
+                answer="missing",
+            )
+        )
+    with pytest.raises(AgentInvocationConflictError, match="waiting for user input"):
+        asyncio.run(
+            agent_service.run_in_conversation(
+                session,
+                workspace.id,
+                conversation.id,
+                "another request",
+            )
+        )
+
+
+def test_agent_service_times_out_pending_input_when_continued(session):
+    agent_service, _, agent_chat, workspace, conversation = make_services(
+        session,
+        [
+            (
+                "Action: request_user_input\nAction Input: "
+                '{"question": "Need input", "input_type": "text"}'
+            ),
+            "Final Answer: I continued without the input.",
+        ],
+        registry=make_registry(ClarifyingQuestionTool()),
+    )
+    paused = asyncio.run(
+        agent_service.run_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "continue later",
+        )
+    )
+    invocation = session.get(AgentInvocation, paused.agent_invocation_id)
+    assert invocation is not None
+    invocation.pending_input = {
+        **invocation.pending_input,
+        "expires_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+    }
+    session.add(invocation)
+    session.commit()
+
+    completed = asyncio.run(
+        agent_service.continue_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            paused.agent_invocation_id,
+            answer="ignored after expiry",
+        )
+    )
+
+    interaction = completed.steps[0].tool_result.interaction
+    assert interaction is not None
+    assert interaction.resolution is not None
+    assert interaction.resolution.kind == "timed_out"
+    assert "timed out" in agent_chat.calls[1]["message"]
 
 
 def test_agent_service_emits_started_and_finished_events(session):
@@ -688,11 +1553,16 @@ def test_agent_service_rolls_back_when_saving_exchange_fails(session, monkeypatc
         registry=make_registry(),
     )
     original_commit = session.commit
+    commit_calls = 0
 
     def broken_commit():
+        nonlocal commit_calls
         from sqlalchemy.exc import SQLAlchemyError
 
-        raise SQLAlchemyError("write failed")
+        commit_calls += 1
+        if commit_calls == 2:
+            raise SQLAlchemyError("write failed")
+        return original_commit()
 
     monkeypatch.setattr(session, "commit", broken_commit)
     with pytest.raises(
@@ -724,11 +1594,17 @@ def test_agent_service_emits_failed_event_when_saving_exchange_fails(
         ["Final Answer: no tool needed"],
         registry=make_registry(),
     )
+    original_commit = session.commit
+    commit_calls = 0
 
     def broken_commit():
+        nonlocal commit_calls
         from sqlalchemy.exc import SQLAlchemyError
 
-        raise SQLAlchemyError("write failed")
+        commit_calls += 1
+        if commit_calls == 2:
+            raise SQLAlchemyError("write failed")
+        return original_commit()
 
     monkeypatch.setattr(session, "commit", broken_commit)
     with pytest.raises(WorkspacePersistenceError):

@@ -11,6 +11,8 @@ from app.core.agent_loop import (
     parse_agent_output,
 )
 from app.tools.calculator import CalculatorTool
+from app.tools.clarifying_question import ClarifyingQuestionTool
+from app.tools.interactions import ClarificationResolution
 from app.tools.registry import (
     TOOL_CONFIRMATION_REQUIRED,
     ToolContext,
@@ -182,6 +184,80 @@ def test_agent_calls_calculator_then_returns_final_answer():
     assert result.steps[0].tool_result is not None
     assert result.steps[0].tool_result.artifacts.outputs == {"result": 7}
     assert result.agent_mode == AGENT_MODE_REACT_TEXT
+
+
+def test_agent_pauses_for_clarification_and_resumes_with_remaining_budget():
+    llm = FakeLLM(
+        [
+            (
+                "Action: request_user_input\nAction Input: "
+                '{"question": "Which value?", "input_type": "text"}'
+            ),
+            "Final Answer: continued with the supplied value",
+        ]
+    )
+    executor = ReactTextAgentExecutor(
+        llm=llm,
+        tool_registry=make_registry(ClarifyingQuestionTool()),
+    )
+
+    paused = asyncio.run(
+        executor.run("choose", ToolContext(), system_prompt="system", max_steps=2)
+    )
+
+    assert paused.answer is None
+    assert paused.pending_interaction is not None
+    assert paused.llm_call_count == 1
+    assert len(paused.steps) == 1
+    pending_step = paused.steps[0]
+    resolved_result = pending_step.tool_result.model_copy(
+        update={
+            "content": "User answered clarification: forty-two",
+            "interaction": pending_step.tool_result.interaction.model_copy(
+                update={
+                    "resolution": ClarificationResolution(
+                        kind="answered",
+                        answer="forty-two",
+                    )
+                }
+            ),
+        }
+    )
+    resolved_step = pending_step.model_copy(
+        update={"observation": resolved_result.content, "tool_result": resolved_result}
+    )
+
+    completed = asyncio.run(
+        executor.run(
+            "choose",
+            ToolContext(),
+            system_prompt="system",
+            max_steps=2,
+            initial_steps=[resolved_step],
+            initial_llm_call_count=paused.llm_call_count,
+        )
+    )
+
+    assert completed.answer == "continued with the supplied value"
+    assert completed.llm_call_count == 2
+    assert "User answered clarification: forty-two" in llm.calls[1]["message"]
+
+
+def test_agent_does_not_pause_for_clarification_on_last_step():
+    result = run_agent(
+        [
+            (
+                "Action: request_user_input\nAction Input: "
+                '{"question": "Need input", "input_type": "text"}'
+            )
+        ],
+        make_registry(ClarifyingQuestionTool()),
+        max_steps=1,
+    )
+
+    assert result.pending_interaction is None
+    assert result.max_steps_reached is True
+    assert result.steps[0].error == "clarification_requires_remaining_step"
 
 
 def test_agent_emits_llm_and_tool_events():
@@ -424,3 +500,9 @@ def test_agent_prompt_builder_lists_tools_and_protocol():
     assert "calculator" in prompt
     assert "Action Input: <JSON object>" in prompt
     assert "Final Answer: <answer to the user>" in prompt
+    assert "request_user_input" not in prompt
+
+    registry.register(ClarifyingQuestionTool())
+    clarification_prompt = build_agent_system_prompt("Base prompt.", registry)
+
+    assert "request_user_input" in clarification_prompt

@@ -301,6 +301,27 @@
         gap: 12px;
       }
 
+      .clarification {
+        border-top: 1px solid var(--line);
+        background: var(--surface-soft);
+        padding: 14px 18px;
+      }
+
+      .clarification[hidden] {
+        display: none;
+      }
+
+      .clarification-title {
+        margin-bottom: 6px;
+        font-weight: 800;
+      }
+
+      .clarification-meta {
+        margin-bottom: 10px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
       .controls {
         display: grid;
         grid-template-columns: 1fr 76px;
@@ -531,6 +552,7 @@
 
         <main class="main">
           <section class="messages" id="messages" aria-live="polite"></section>
+          <section class="clarification" id="clarification-panel" hidden></section>
           <form class="composer" id="agent-form">
             <textarea
               id="message-input"
@@ -580,6 +602,7 @@
           messages: [],
           events: [],
           busy: false,
+          pendingRun: null,
         };
 
         const $ = (id) => document.getElementById(id);
@@ -593,6 +616,7 @@
           createConversation: $("create-conversation"),
           refreshConversations: $("refresh-conversations"),
           messages: $("messages"),
+          clarificationPanel: $("clarification-panel"),
           form: $("agent-form"),
           messageInput: $("message-input"),
           agentMode: $("agent-mode"),
@@ -852,14 +876,15 @@
           article.append(meta, content);
 
           const invocationId = message.metrics?.agent_invocation_id;
-          if (message.role === "assistant" && invocationId) {
+          if (invocationId) {
             const sources = Array.isArray(message.sources) ? message.sources : [];
             const actions = document.createElement("div");
             actions.className = "message-actions";
             const traceButton = document.createElement("button");
             traceButton.className = "small-button";
             traceButton.type = "button";
-            traceButton.textContent = "Trace";
+            traceButton.textContent =
+              message.role === "user" ? "Resume" : "Trace";
             traceButton.addEventListener("click", () => {
               loadTrace(invocationId, article, sources);
             });
@@ -883,8 +908,14 @@
               `/workspaces/${state.workspaceId}/conversations/${state.conversationId}/agent-invocations/${invocationId}`,
             );
             trace.replaceChildren(renderTrace(invocation));
-            renderRun(invocationToRun(invocation, sources));
-            setStatus("Trace loaded", "ok");
+            const run = invocationToRun(invocation, sources);
+            renderRun(run);
+            if (run.status === "needs_input" && run.pending_input) {
+              setPendingRun(run);
+              setStatus("Agent is waiting for clarification input", "ok");
+            } else {
+              setStatus("Trace loaded", "ok");
+            }
           } catch (error) {
             trace.textContent = error.message;
             setStatus(error.message, "error");
@@ -893,6 +924,12 @@
 
         function invocationToRun(invocation, sources = []) {
           return {
+            agent_invocation_id: invocation.id,
+            conversation_id: invocation.conversation_id,
+            message: invocation.input_message,
+            status: invocation.status,
+            answer: invocation.answer,
+            pending_input: invocation.pending_input,
             steps: invocation.steps,
             sources: Array.isArray(sources) ? sources : [],
             metrics: {
@@ -932,6 +969,75 @@
           renderMetrics(run?.metrics || {});
           renderSteps(run?.steps || []);
           renderSources(run?.sources || []);
+        }
+
+        function setPendingRun(run) {
+          state.pendingRun = run;
+          setBusy(state.busy);
+        }
+
+        function clearPendingRun() {
+          state.pendingRun = null;
+          setBusy(state.busy);
+        }
+
+        function renderClarification() {
+          const pending = state.pendingRun?.pending_input;
+          const invocationId = state.pendingRun?.agent_invocation_id;
+          els.clarificationPanel.hidden = !pending || !invocationId;
+          clear(els.clarificationPanel);
+          if (!pending || !invocationId) {
+            return;
+          }
+
+          const title = document.createElement("div");
+          title.className = "clarification-title";
+          title.textContent = pending.question;
+          const meta = document.createElement("div");
+          meta.className = "clarification-meta";
+          meta.textContent = `Waiting for input until ${new Date(pending.expires_at).toLocaleString()}`;
+          const controls = document.createElement("div");
+          controls.className = "stack";
+
+          if (pending.input_type === "choice") {
+            pending.choices.forEach((choice) => {
+              const button = document.createElement("button");
+              button.type = "button";
+              button.textContent = choice;
+              button.disabled = state.busy;
+              button.addEventListener("click", () => continueAgent({ answer: choice }));
+              controls.append(button);
+            });
+          } else {
+            const row = document.createElement("div");
+            row.className = "row";
+            const input = document.createElement("input");
+            input.type = "text";
+            input.placeholder = "Your answer";
+            input.setAttribute("aria-label", "Clarification answer");
+            input.disabled = state.busy;
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = "Continue";
+            button.disabled = state.busy;
+            button.addEventListener("click", () => {
+              const answer = input.value.trim();
+              if (answer) {
+                continueAgent({ answer });
+              }
+            });
+            row.append(input, button);
+            controls.append(row);
+          }
+
+          const skip = document.createElement("button");
+          skip.type = "button";
+          skip.className = "small-button";
+          skip.textContent = "Skip";
+          skip.disabled = state.busy;
+          skip.addEventListener("click", () => continueAgent({ skip: true }));
+          controls.append(skip);
+          els.clarificationPanel.append(title, meta, controls);
         }
 
         function renderEvents(events = state.events) {
@@ -1015,6 +1121,9 @@
           if (event.type === "agent_finished") {
             return "Final answer saved";
           }
+          if (event.type === "agent_needs_input") {
+            return "Waiting for clarification input";
+          }
           if (event.type === "agent_failed") {
             return payload.error || "Agent failed";
           }
@@ -1091,6 +1200,14 @@
             policyNode.append(policyLabel, ` ${policy}`);
             kv.append(policyNode);
           }
+          const interaction = interactionSummary(step);
+          if (interaction) {
+            const interactionNode = document.createElement("div");
+            const interactionLabel = document.createElement("strong");
+            interactionLabel.textContent = "Interaction:";
+            interactionNode.append(interactionLabel, ` ${interaction}`);
+            kv.append(interactionNode);
+          }
           const artifactSummaryNode = document.createElement("div");
           const artifactSummaryLabel = document.createElement("strong");
           artifactSummaryLabel.textContent = "Artifacts:";
@@ -1130,6 +1247,17 @@
             return `blocked by policy (${errorDetails.reason || "not allowed"})`;
           }
           return "";
+        }
+
+        function interactionSummary(step) {
+          const interaction = step.tool_result?.interaction;
+          if (!interaction || interaction.kind !== "clarification") {
+            return "";
+          }
+          if (!interaction.resolution) {
+            return "waiting for user input";
+          }
+          return interaction.resolution.kind;
         }
 
         function artifactSummary(step) {
@@ -1201,9 +1329,10 @@
 
         function setBusy(value) {
           state.busy = value;
-          els.sendButton.disabled = value;
+          els.sendButton.disabled = value || Boolean(state.pendingRun);
           els.createWorkspace.disabled = value;
           els.createConversation.disabled = value;
+          renderClarification();
         }
 
         async function sendAgentMessage(event) {
@@ -1212,11 +1341,16 @@
           if (!message || state.busy) {
             return;
           }
+          if (state.pendingRun) {
+            setStatus("Answer or skip the pending clarification first.", "error");
+            return;
+          }
           setBusy(true);
           setStatus("Running agent");
           state.events = [];
           renderEvents();
           renderRun({ metrics: {}, steps: [], sources: [] });
+          clearPendingRun();
           try {
             await ensureWorkspaceAndConversation();
             const maxSteps = Number.parseInt(els.maxSteps.value, 10) || 5;
@@ -1226,7 +1360,7 @@
               agent_mode: els.agentMode.value,
               approved_tool_call_ids: [],
             };
-            let finalRun = null;
+            let terminalRun = null;
             let failure = null;
             await requestEventStream(
               `/workspaces/${state.workspaceId}/conversations/${state.conversationId}/agent/stream`,
@@ -1237,9 +1371,16 @@
               (streamEvent) => {
                 appendAgentEvent(streamEvent);
                 if (streamEvent.type === "agent_finished") {
-                  finalRun = streamEvent.payload;
-                  renderRun(finalRun);
+                  terminalRun = streamEvent.payload;
+                  renderRun(terminalRun);
+                  clearPendingRun();
                   setStatus("Agent run completed", "ok");
+                }
+                if (streamEvent.type === "agent_needs_input") {
+                  terminalRun = streamEvent.payload;
+                  renderRun(terminalRun);
+                  setPendingRun(terminalRun);
+                  setStatus("Agent is waiting for clarification input", "ok");
                 }
                 if (streamEvent.type === "agent_failed") {
                   failure = streamEvent.payload?.error || "Agent run failed";
@@ -1250,13 +1391,65 @@
             if (failure) {
               throw new Error(failure);
             }
-            if (!finalRun) {
-              throw new Error("Agent stream ended without a final result.");
+            if (!terminalRun) {
+              throw new Error("Agent stream ended without a lifecycle result.");
             }
             els.messageInput.value = "";
             await loadMessages();
             await loadConversations(state.conversationId);
-            setStatus("Agent run completed", "ok");
+            if (terminalRun.status !== "needs_input") {
+              setStatus("Agent run completed", "ok");
+            }
+          } catch (error) {
+            setStatus(error.message, "error");
+          } finally {
+            setBusy(false);
+          }
+        }
+
+        async function continueAgent(payload) {
+          if (state.busy || !state.pendingRun?.agent_invocation_id) {
+            return;
+          }
+          setBusy(true);
+          setStatus("Continuing agent");
+          let terminalRun = null;
+          let failure = null;
+          try {
+            await requestEventStream(
+              `/workspaces/${state.workspaceId}/conversations/${state.conversationId}/agent-invocations/${state.pendingRun.agent_invocation_id}/continue/stream`,
+              { method: "POST", body: JSON.stringify(payload) },
+              (streamEvent) => {
+                appendAgentEvent(streamEvent);
+                if (streamEvent.type === "agent_finished") {
+                  terminalRun = streamEvent.payload;
+                  renderRun(terminalRun);
+                  clearPendingRun();
+                }
+                if (streamEvent.type === "agent_needs_input") {
+                  terminalRun = streamEvent.payload;
+                  renderRun(terminalRun);
+                  setPendingRun(terminalRun);
+                }
+                if (streamEvent.type === "agent_failed") {
+                  failure = streamEvent.payload?.error || "Agent run failed";
+                }
+              },
+            );
+            if (failure) {
+              throw new Error(failure);
+            }
+            if (!terminalRun) {
+              throw new Error("Agent stream ended without a lifecycle result.");
+            }
+            await loadMessages();
+            await loadConversations(state.conversationId);
+            setStatus(
+              terminalRun.status === "needs_input"
+                ? "Agent is waiting for clarification input"
+                : "Agent run completed",
+              "ok",
+            );
           } catch (error) {
             setStatus(error.message, "error");
           } finally {
@@ -1272,6 +1465,7 @@
         });
         els.workspaceSelect.addEventListener("change", async (event) => {
           state.workspaceId = event.target.value;
+          clearPendingRun();
           await loadConversations();
         });
         els.refreshConversations.addEventListener("click", () => {
@@ -1282,6 +1476,7 @@
         });
         els.conversationSelect.addEventListener("change", async (event) => {
           state.conversationId = event.target.value;
+          clearPendingRun();
           await loadMessages();
         });
         els.reloadMessages.addEventListener("click", () => {
@@ -1291,6 +1486,7 @@
 
         renderRun({ metrics: {}, steps: [], sources: [] });
         renderEvents();
+        renderClarification();
         loadWorkspaces()
           .then(() => setStatus("Ready", "ok"))
           .catch((error) => setStatus(error.message, "error"));

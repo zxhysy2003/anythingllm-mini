@@ -1,8 +1,11 @@
 # 最终版 Agent Loop 与工具系统
 
+术语遵循 [Agent 文档术语（Terminology）](../tech-notes/agent-terminology.md)。本说明中的
+`contract`、`clarification`、`lifecycle`、`replay` 等词均采用该表定义。
+
 当前代码在 Workspace 和 Conversation 边界内运行一个最小、可解释、可测试的 Agent
-闭环。V4 建立了 executor、tool registry 和 invocation/step 持久化基线；此后又沿能力线补上
-SSE 事件 timeline、backend-first tool policy、统一 tool artifacts 和确定性 replay，但没有把
+闭环。V4 建立了 executor、tool registry 和 invocation/step persistence 基线；此后又沿能力线补上
+SSE 事件 timeline、backend-first tool policy、统一 tool artifacts、单次 clarification 和确定性 replay，但没有把
 它扩张成通用 Agent 平台：
 
 ```text
@@ -28,8 +31,9 @@ POST /workspaces/{workspace_id}/conversations/{conversation_id}/agent
   -> ReactTextAgentExecutor.run() 或 DeepSeekNativeToolCallingExecutor.run()
   -> ReAct parser 或 DeepSeek tool_calls
   -> ToolRegistry.run()
-  -> calculator 或 workspace_document_search
-  -> 保存 user/assistant messages、agent invocation 和 ordered steps
+  -> calculator、workspace_document_search 或 request_user_input
+  -> 完成，或以 needs_input pause 同一个 invocation
+  -> 保存 user/assistant messages（仅完成时）、agent invocation 和 ordered steps
 ```
 
 `POST .../agent/stream` 复用同一条业务链路，只在 executor/service 的显式边界发出有序事件，
@@ -40,10 +44,12 @@ POST /workspaces/{workspace_id}/conversations/{conversation_id}/agent
 ```text
 backend/app/core/agent_loop.py          -> Agent loop、ReAct parser、agent prompt builder
 backend/app/tools/registry.py           -> ToolContext、ToolResult、ToolRegistry
-backend/app/tools/artifacts.py          -> ToolArtifacts、source/output 合同和路径安全限制
+backend/app/tools/artifacts.py          -> ToolArtifacts、source/output contract 和路径安全限制
+backend/app/tools/interactions.py       -> clarification request、pending input 与 resolution contract
+backend/app/tools/clarifying_question.py -> request_user_input 工具
 backend/app/tools/calculator.py         -> 安全计算器工具
 backend/app/tools/document_tools.py     -> Workspace 文档搜索工具
-backend/app/services/agent_service.py   -> Workspace 边界、历史、执行和持久化编排
+backend/app/services/agent_service.py   -> Workspace 边界、history、execution 和 persistence orchestration
 backend/app/api/agents.py               -> Workspace Conversation Agent API
 backend/app/api/schemas/agents.py       -> Agent request/response schema
 backend/app/core/agent_events.py        -> AgentEvent、事件类型和 emitter protocol
@@ -51,7 +57,7 @@ backend/app/core/agent_executor.py      -> AgentExecutor protocol、共享结果
 backend/app/core/agent_modes.py         -> 当前可运行 agent mode 常量
 backend/app/core/native_tool_calling.py -> DeepSeek provider-native tool calling executor
 backend/app/core/llm.py                 -> DeepSeek text chat 和 native tool_calls adapter
-backend/app/models/agent.py             -> agent_invocations / agent_steps 持久化模型
+backend/app/models/agent.py             -> agent_invocations / agent_steps persistence model
 backend/app/services/agent_replay_service.py -> invocation export 和确定性 replay 检查
 backend/app/maintenance/export_agent_replay.py / replay_agent_fixture.py -> replay CLI 入口
 ```
@@ -93,6 +99,8 @@ Final Answer: 结果是 3
 - 模型需要工具时返回 `message.tool_calls`。
 - 本地按顺序执行 tool calls，并把 `role="tool"`、`tool_call_id` 和工具结果追加回下一轮
   messages。
+- `request_user_input` 只能是该轮唯一的 native tool call；否则整轮 tool calls 都记录为未执行失败，
+  不会在等待用户前执行其他工具。
 - 模型返回普通 content 时作为最终答案。
 
 这个模式不使用 `Action:` / `Action Input:` 文本 parser。工具输入仍由本地 Pydantic
@@ -109,11 +117,14 @@ ToolContext
 - conversation_id
 - agent_mode
 - approved_tool_call_ids
+- clarification_count
+- remaining_llm_calls
 
 ToolResult
 - ok
 - content
 - artifacts
+- interaction
 - error
 - error_details
 
@@ -143,7 +154,8 @@ BaseTool
 
 `content` 是唯一进入下一轮 LLM 推理的 observation。`artifacts` 是给 service、API、
 invocation persistence 和调试页消费的结构化产物；`error_details` 只保存 validation 和
-tool policy 等失败诊断信息。
+tool policy 等失败诊断信息。`interaction` 是不属于 artifacts 的 control-flow contract：目前只表示
+clarification request 及其 answered/skipped/timed_out resolution。
 
 第一版 artifact contract 支持：
 
@@ -155,10 +167,11 @@ tool policy 等失败诊断信息。
 
 - `calculator`
 - `workspace_document_search`
+- `request_user_input`
 
 ## Tool Policy
 
-当前第一版 tool policy 是 backend-first、无持久化 pending state 的执行前检查。
+当前第一版 tool policy 是 backend-first、无 pending-state persistence 的执行前检查。
 
 `ToolRegistry.run()` 的顺序固定为：
 
@@ -182,9 +195,51 @@ tool policy 等失败诊断信息。
 规范化输入、workspace、conversation 和 agent mode 确定性生成。调用方可以在新的 Agent 请求中
 通过 `approved_tool_call_ids` 回传这个 ID，registry 再次校验相同动作后才放行。
 
-这个边界目前是 stateless retry，不是完整的暂停/恢复工作流：没有 pending approval 表、过期
-时间、用户身份绑定或前端确认按钮。默认 `calculator` 和 `workspace_document_search` 都是低风险、
-无副作用工具，因此真实确认路径主要由测试工具刻画。
+这个边界目前是 stateless retry，不是完整的 pause/resume workflow：没有 pending approval 表、过期
+时间、用户身份绑定或前端确认按钮。默认 `calculator`、`workspace_document_search` 和
+`request_user_input` 都是低风险、无副作用工具，因此真实确认路径主要由测试工具刻画。
+
+## Clarifying Question 与 Invocation Lifecycle
+
+`request_user_input` 让模型把“还缺什么信息”表达为结构化 tool call，而不是在最终回答里留下一个
+未受控的反问。输入是非空 `question`、`input_type="text"` 或 `"choice"`；choice 必须有 2–8 个
+唯一选项。它是低风险、无副作用工具，但会返回 `ToolResult.interaction`，不会把问题写入
+`artifacts`。
+
+每个 invocation 最多可提出一次 clarification，而且必须至少保留一次 LLM call 来使用用户回答。两个 executor
+收到未解决 interaction 后立即返回 `needs_input`：ReAct 后续轮次不再运行；native mode 还会保存原始
+assistant tool-call message，continue 时再补对应的 `role="tool"` observation，保留 call grouping。
+
+pause 和 completion 是同一条 lifecycle 的不同状态：
+
+```text
+POST .../agent
+-> request_user_input
+-> 保存 user message、steps、needs_input invocation、pending_input、resume_state
+-> 返回/发送 agent_needs_input（没有 assistant message）
+-> POST .../agent-invocations/{id}/continue
+-> 将原 step 的 interaction 标记为 answered、skipped 或 timed_out
+-> 用累计 LLM/step 预算恢复 executor
+-> 创建唯一 assistant message，完成同一 invocation
+```
+
+`pending_input.expires_at` 是十分钟后的时间点；没有后台 worker。下一次 continue 请求发现过期时，会
+忽略提交的 answer 并写入 `timed_out` observation。choice answer 必须精确匹配记录的选项。已完成或
+不在 `needs_input` 的 invocation 再次 continue、以及同一 conversation 有 pending invocation 时
+再开启新的 Agent run，都会返回冲突。
+
+为了让这些 lifecycle 限制在重试、重复点击或并发请求时仍成立，初始 Agent run 与 continue 都使用一次带
+15 分钟 lease 的条件更新取得 `Conversation.agent_execution_claim_id`。同一 conversation 同时只能有一个
+active Agent execution；未取得 claim 的请求直接冲突，不会调用 LLM 或执行 tool。请求运行期间每五分钟 heartbeat
+续约，进程中断后的过期 claim 可由后续请求接管。pause persistence 则由 SQLite partial unique index 保证每个
+conversation 只有一个 `needs_input` invocation；写入竞争的失败事务会 rollback。
+
+lease 过期的旧请求即使晚到，也不能覆盖新持有者：pause、completed 和 finalization 都会在同一 transaction
+中再次按 conversation claim ID 做条件更新（fencing），未持有当前 claim 的请求会 rollback，因而不会额外创建
+assistant message 或修改 steps。
+
+第一版不支持多轮 clarification、approval persistence、通用 checkpoint/resume 或多客户端协作。`agent_ui.html` 只提供 text /
+choice、Skip 和 expiry 的薄调试面板；Vue 前端不在这个切片内。
 
 ## Calculator Tool
 
@@ -258,7 +313,8 @@ AgentService
 4. 从工具步骤的 `artifacts.sources` 中提取文档引用。
 5. 统计 agent metrics。
 6. 在非流式和流式调用中发出相同的业务事件。
-7. 用一次数据库 transaction 保存最终 user/assistant messages、invocation 和 ordered steps。
+7. 完成时用一次数据库 transaction 保存 user/assistant messages、invocation 和 ordered steps；
+   pause 时立即保存 user message、pending invocation 和已有 steps，但不创建 assistant message。
 
 `query` 模式下，Agent system prompt 会额外提示模型：如果问题可能依赖 Workspace
 文档，应先使用 `workspace_document_search`。
@@ -284,6 +340,7 @@ tool_started
 tool_finished
 parse_error
 max_steps_reached
+agent_needs_input
 agent_finished
 agent_failed
 ```
@@ -297,20 +354,22 @@ event: tool_finished
 data: {"sequence": 5, "type": "tool_finished", "payload": {...}}
 ```
 
-`None` 是内部结束 sentinel，不会作为业务事件发送。成功运行最后一个事件是
-`agent_finished`，其 payload 与非流式 endpoint 的完整结果合同一致；运行异常通过
-`agent_failed` 表达。当前客户端断开后的主动取消、断点恢复和多客户端订阅仍未实现。
+`None` 是内部结束 sentinel，不会作为业务事件发送。完成运行最后一个事件是
+`agent_finished`，其 payload 与非流式 endpoint 的完整 result contract 一致；pause run 的最后一个事件是
+`agent_needs_input`，其 payload 包含 `pending_input` 和同一 invocation ID。运行异常通过
+`agent_failed` 表达。当前客户端断开后的主动取消和多客户端订阅仍未实现。
 
 ## Persistence
 
-Agent 调用最终仍只保存两条 ConversationMessage：
+完成的 Agent 调用最终保存两条 ConversationMessage：
 
 ```text
 user message
 assistant message
 ```
 
-中间工具调用不保存成单独 message，避免污染普通聊天历史。工具步骤保存到
+pause 的 Agent invocation 先只保存原 user message；没有半成品 assistant message 或 answer。中间 tool calls
+始终不保存成单独 message，避免污染普通聊天历史。工具步骤保存到
 `agent_invocations` / `agent_steps` 表；assistant message 的 `metrics` 只保留
 `agent_invocation_id` 和汇总指标：
 
@@ -338,7 +397,7 @@ GET /workspaces/{workspace_id}/conversations/{conversation_id}/agent-invocations
 Assistant message 同时保存：
 
 - `content`：最终答案。
-- `sources`：工具检索出的 source 快照。
+- `sources`：工具检索出的 source snapshot。
 - `provider` 和 `model`。
 - `metrics`：`agent_invocation_id`、LLM 调用次数、step 数、工具调用数、
   失败 step 数、source 数、`max_steps_reached` 和总耗时。
@@ -352,9 +411,9 @@ Assistant message 同时保存：
 
 - `react_text` parser 是否仍产生相同 action、input 或 parser error。
 - 当前 registry 是否仍能找到工具并维持相同输入校验边界；policy 结果仅作历史证据。
-- step、artifacts、sources、status 和 metrics 是否仍能相互推导。
+- step、artifacts、sources、status、clarification resolution 和 metrics 是否仍能相互推导。
 
-Replay 不调用真实 LLM，也不执行工具，因此它是工程回归，不是回答质量评测或线上运行重放。
+Replay 不调用真实 LLM，也不执行工具，因此它是 engineering regression，不是回答质量评测或线上 run replay。
 真实导出可能包含 user message、LLM 文本和 source 内容，不能未经检查直接提交。具体命令和 fixture
 边界见 `docs/tech-notes/agent-replay.md`。
 
@@ -389,8 +448,11 @@ detail 读取。
 ```json
 {
   "conversation_id": "...",
+  "agent_invocation_id": "...",
   "message": "请计算 1 + 2 * 3",
+  "status": "completed",
   "answer": "结果是 7",
+  "pending_input": null,
   "steps": [],
   "sources": [],
   "provider": "deepseek",
@@ -407,14 +469,26 @@ detail 读取。
 }
 ```
 
+如果模型请求 clarification，响应改为 `status="needs_input"`、`answer=null`，并在 `pending_input` 给出
+question、input type、choices 和 `expires_at`。提交 answer 或 skip 的 lifecycle continuation 接口是：
+
+```http
+POST /workspaces/{workspace_id}/conversations/{conversation_id}/agent-invocations/{invocation_id}/continue
+POST /workspaces/{workspace_id}/conversations/{conversation_id}/agent-invocations/{invocation_id}/continue/stream
+```
+
+请求体必须是非空 `answer` 或 `skip: true` 二选一；choice answer 必须精确匹配。两条接口都 continue
+原 invocation，而非发起新的 Agent run。
+
 SSE 事件接口使用同一个请求 schema：
 
 ```http
 POST /workspaces/{workspace_id}/conversations/{conversation_id}/agent/stream
 ```
 
-响应类型是 `text/event-stream`。它返回有序运行事件，并在 `agent_finished` 中给出完整最终结果，
-而不是在 HTTP response body 中直接返回 `WorkspaceAgentResponse` JSON。
+响应类型是 `text/event-stream`。它返回有序 lifecycle events；pause 时以 `agent_needs_input` 正常结束，
+完成时 `agent_finished` 给出完整最终结果，而不是在 HTTP response body 中直接返回
+`WorkspaceAgentResponse` JSON。
 
 Invocation 查询接口：
 
@@ -449,6 +523,11 @@ Agent 的失败边界分层处理：
   `ToolResult(ok=False, error="tool_blocked_by_policy")`，不执行工具。
 - 工具需要确认但没有匹配 approval ID：返回
   `ToolResult(ok=False, error="tool_confirmation_required")`，并在 `error_details` 给出 approval ID。
+- 第二次 clarification 或最后一个 LLM step 请求 clarification：返回可解释的 failed observation，不 pause。
+- native 一轮混合 clarification 和其他 tool call：所有该轮调用记录为
+  `clarification_must_be_single_tool_call`，不执行任何工具。
+- continue 的 answer/skip 不满足 pending input、choice 不匹配、重复 continue 或 scope 不匹配：
+  返回校验错误、冲突或 not found；不会创建新的 assistant message。
 - DB 保存失败：rollback，并返回 `WorkspacePersistenceError`。
 - SSE 运行中异常：发送 `agent_failed` 后结束 stream；它不是普通 JSON error response。
 
@@ -466,15 +545,15 @@ Agent 的失败边界分层处理：
 - `backend/tests/test_document_tools.py`：Workspace 文档搜索工具的 workspace 约束、参数透传、
   sources 返回和无结果行为。
 - `backend/tests/test_agent_loop.py`：ReAct parser、`ReactTextAgentExecutor`、parse error、
-  unknown tool、invalid input、`max_steps`、`agent_mode` 和 prompt builder。
+  unknown tool、invalid input、`max_steps`、clarification pause/resume 和 prompt builder。
 - `backend/tests/test_native_tool_calling.py`：DeepSeek native tool calling executor、tool_calls、
-  tool message 回传、失败 step、多 tool call 和 `max_steps`。
+  tool message 回传、failed step、多 tool call、clarification pause/resume 和 `max_steps`。
 - `backend/tests/test_agent_service.py`：Workspace context 注入、calculator、document search、
-  sources 提取、executor mode 选择、事件、approval、消息/invocation/step 持久化和 rollback。
-- `backend/tests/test_agents_api.py`：Agent endpoint、messages endpoint 读回、失败工具步骤持久化、
+  sources 提取、executor mode 选择、事件、approval、message/invocation/step persistence 和 rollback。
+- `backend/tests/test_agents_api.py`：Agent endpoint、messages endpoint 读回、failed tool step persistence、
   SSE 事件、approval、invocation scope、`agent_mode` 请求校验、native mode 和普通 chat 回归。
-- `backend/tests/test_agent_replay_service.py`：fixture parser/registry/artifact/metrics 回归、导出脱敏和
-  不执行真实工具的边界。
+- `backend/tests/test_agent_replay_service.py`：fixture parser/registry/artifact/clarification/metrics 回归、
+  导出脱敏和不执行真实工具的边界。
 - `backend/tests/test_agent_replay_cli.py`：export/replay 命令参数、overwrite 规则和 exit code。
 
 ### Suggested Tests To Read
@@ -502,7 +581,7 @@ git diff --check
 
 当前实现保持最小、可测试的 Agent 闭环。普通 Agent endpoint 同步返回完整结果；
 `/agent/stream` 额外支持 SSE-format 运行事件 timeline，实时推送显式 agent、LLM、tool、
-parse error、max steps 和最终状态。两条 API 共享 executor、tool policy、持久化和结果合同。
+parse error、max steps 和最终状态。两条 API 共享 executor、tool policy、persistence 和 result contract。
 
 暂不实现：
 
@@ -511,10 +590,10 @@ parse error、max steps 和最终状态。两条 API 共享 executor、tool poli
 - 客户端断开后的主动取消、断点恢复和多客户端订阅。
 - DeepSeek beta strict mode。
 - 后台任务、定时任务和长任务恢复。
-- 多用户认证、RBAC、审计日志和持久化 approval/resume 工作流。
+- 多用户认证、RBAC、审计日志和 approval/resume persistence workflow。
 - Agent 可调用的外部浏览器、shell、文件系统、邮件、日历等高风险工具。
 - 二进制 attachments 和不受限的任意 tool outputs。
-- 隐藏 chain-of-thought 暴露；事件只记录显式状态、tool result 和可持久化结果。
+- 隐藏 chain-of-thought 暴露；事件只记录显式 state、tool result 和可持久化结果。
 
 当前版本已经把新产生的 Agent 运行步骤迁到 `agent_invocations` / `agent_steps` 表。
 旧 assistant message metrics 中如果已经存在历史 `agent_steps`，本阶段不做清洗或回填。
@@ -522,4 +601,4 @@ parse error、max steps 和最终状态。两条 API 共享 executor、tool poli
 当前 executor 边界已经拆出：`AgentService` 依赖 `AgentExecutor` protocol，默认运行
 `ReactTextAgentExecutor`，也可以通过 `agent_mode="native_tool_calling"` 运行
 `DeepSeekNativeToolCallingExecutor`。两种模式共享 `ToolRegistry`、`ToolContext`、
-`AgentStep`、tool policy、artifact contract、事件、invocation/step 持久化和 metrics 汇总。
+`AgentStep`、tool policy、artifact contract、事件、invocation/step persistence 和 metrics 汇总。

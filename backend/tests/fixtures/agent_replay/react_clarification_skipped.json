@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "invocation": {
+    "agent_mode": "react_text",
+    "status": "completed",
+    "provider": "fake",
+    "model": "fake-agent-model",
+    "input_message": "Summarize the plan.",
+    "answer": "I will state the assumptions before summarizing."
+  },
+  "metrics": {
+    "max_steps": 3,
+    "llm_call_count": 2,
+    "step_count": 1,
+    "tool_call_count": 1,
+    "failed_step_count": 0,
+    "source_count": 0,
+    "max_steps_reached": false,
+    "total_latency_ms": 11
+  },
+  "steps": [
+    {
+      "step_index": 1,
+      "llm_output": "Action: request_user_input\nAction Input: {\"question\": \"Which audience should I use?\", \"input_type\": \"text\", \"choices\": []}",
+      "action": "request_user_input",
+      "action_input": {
+        "question": "Which audience should I use?",
+        "input_type": "text",
+        "choices": []
+      },
+      "observation": "User skipped the clarification request.",
+      "ok": true,
+      "error": null,
+      "tool_result": {
+        "ok": true,
+        "content": "User skipped the clarification request.",
+        "artifacts": {"sources": [], "outputs": {}},
+        "interaction": {
+          "kind": "clarification",
+          "request": {
+            "question": "Which audience should I use?",
+            "input_type": "text",
+            "choices": []
+          },
+          "resolution": {"kind": "skipped", "answer": null}
+        },
+        "error": null,
+        "error_details": {}
+      }
+    }
+  ],
+  "sources": []
+}

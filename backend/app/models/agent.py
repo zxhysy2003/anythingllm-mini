@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import Column, JSON
+from sqlalchemy import Column, Index, JSON, text
 from sqlmodel import Field, SQLModel
 
 from app.core.agent_modes import AGENT_MODE_REACT_TEXT
@@ -10,10 +10,19 @@ from app.models.workspace import utc_now
 
 AGENT_INVOCATION_STATUS_COMPLETED = "completed"
 AGENT_INVOCATION_STATUS_MAX_STEPS_REACHED = "max_steps_reached"
+AGENT_INVOCATION_STATUS_NEEDS_INPUT = "needs_input"
 
 
 class AgentInvocation(SQLModel, table=True):
     __tablename__ = "agent_invocations"
+    __table_args__ = (
+        Index(
+            "uq_agent_invocations_pending_conversation",
+            "conversation_id",
+            unique=True,
+            sqlite_where=text("status = 'needs_input'"),
+        ),
+    )
 
     id: str = Field(default_factory=lambda: uuid4().hex, primary_key=True)
     workspace_id: str = Field(
@@ -31,7 +40,8 @@ class AgentInvocation(SQLModel, table=True):
         ondelete="CASCADE",
         index=True,
     )
-    assistant_message_id: str = Field(
+    assistant_message_id: str | None = Field(
+        default=None,
         foreign_key="conversation_messages.id",
         ondelete="CASCADE",
         index=True,
@@ -50,7 +60,15 @@ class AgentInvocation(SQLModel, table=True):
     max_steps_reached: bool
     total_latency_ms: int
     started_at: datetime
-    ended_at: datetime
+    ended_at: datetime | None = None
+    pending_input: dict[str, Any] | None = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
+    )
+    resume_state: dict[str, Any] | None = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
+    )
     created_at: datetime = Field(default_factory=utc_now, index=True)
 
 

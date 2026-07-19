@@ -88,7 +88,8 @@ def build_agent_system_prompt(
 ) -> str:
     base_prompt = base_system_prompt.strip() or DEFAULT_SYSTEM_PROMPT
     tool_blocks = []
-    for tool in tool_registry.list_tools():
+    tool_descriptions = tool_registry.list_tools()
+    for tool in tool_descriptions:
         input_schema = json.dumps(
             tool.input_schema,
             ensure_ascii=False,
@@ -103,6 +104,12 @@ def build_agent_system_prompt(
             f"  input_schema: {input_schema}"
         )
     tools_text = "\n".join(tool_blocks) if tool_blocks else "- no tools available"
+    clarification_instruction = ""
+    if any(tool.name == "request_user_input" for tool in tool_descriptions):
+        clarification_instruction = (
+            " If required information is missing, call request_user_input instead "
+            "of ending with a question."
+        )
 
     return (
         f"{base_prompt}\n\n"
@@ -115,6 +122,7 @@ def build_agent_system_prompt(
         "Action Input: <JSON object>\n\n"
         "Do not output both Final Answer and Action in the same response. "
         "Do not output Thought as part of the protocol."
+        f"{clarification_instruction}"
     )
 
 
@@ -138,29 +146,34 @@ class ReactTextAgentExecutor:
         temperature: float | None = None,
         max_steps: int = DEFAULT_AGENT_STEPS,
         event_emitter: AgentEventEmitter | None = None,
+        initial_steps: Sequence[AgentStep] | None = None,
+        initial_llm_call_count: int = 0,
+        continuation_observation: str | None = None,
+        resume_state: dict[str, Any] | None = None,
     ) -> AgentRunResult:
+        del continuation_observation, resume_state
         normalized_message = message.strip()
         if not normalized_message:
             raise ValueError("message cannot be empty")
         if not 1 <= max_steps <= MAX_AGENT_STEPS:
             raise ValueError(f"max_steps must be between 1 and {MAX_AGENT_STEPS}")
+        if not 0 <= initial_llm_call_count < max_steps:
+            raise ValueError("initial_llm_call_count must leave one Agent step")
 
         agent_system_prompt = build_agent_system_prompt(
             system_prompt,
             self.tool_registry,
         )
-        tool_context = context.model_copy(
-            update={"agent_mode": context.agent_mode or self.agent_mode}
-        )
-        steps: list[AgentStep] = []
+        steps = list(initial_steps or [])
         provider = None
         model = None
 
-        for step_index in range(1, max_steps + 1):
+        for call_index in range(initial_llm_call_count + 1, max_steps + 1):
+            step_index = len(steps) + 1
             await emit_agent_event(
                 event_emitter,
                 "llm_started",
-                {"step_index": step_index, "agent_mode": self.agent_mode},
+                {"step_index": call_index, "agent_mode": self.agent_mode},
             )
             llm_result = await self.llm.chat(
                 message=self._build_agent_message(normalized_message, steps),
@@ -175,7 +188,7 @@ class ReactTextAgentExecutor:
                 event_emitter,
                 "llm_finished",
                 {
-                    "step_index": step_index,
+                    "step_index": call_index,
                     "agent_mode": self.agent_mode,
                     "provider": provider,
                     "model": model,
@@ -190,7 +203,7 @@ class ReactTextAgentExecutor:
                     steps=steps,
                     provider=provider,
                     model=model,
-                    llm_call_count=step_index,
+                    llm_call_count=call_index,
                     max_steps_reached=False,
                     agent_mode=self.agent_mode,
                 )
@@ -227,7 +240,22 @@ class ReactTextAgentExecutor:
             tool_result = await self.tool_registry.run(
                 parsed.action or "",
                 parsed.action_input,
-                tool_context,
+                context.model_copy(
+                    update={
+                        "agent_mode": context.agent_mode or self.agent_mode,
+                        "clarification_count": sum(
+                            1
+                            for prior_step in steps
+                            if (
+                                prior_step.tool_result is not None
+                                and prior_step.tool_result.interaction is not None
+                                and prior_step.tool_result.interaction.kind
+                                == "clarification"
+                            )
+                        ),
+                        "remaining_llm_calls": max_steps - call_index,
+                    }
+                ),
             )
             step = AgentStep(
                 step_index=step_index,
@@ -245,6 +273,21 @@ class ReactTextAgentExecutor:
                 "tool_finished",
                 {"step": step.model_dump(mode="json")},
             )
+            if (
+                tool_result.interaction is not None
+                and tool_result.interaction.resolution is None
+            ):
+                return AgentRunResult(
+                    message=normalized_message,
+                    answer=None,
+                    steps=steps,
+                    provider=provider,
+                    model=model,
+                    llm_call_count=call_index,
+                    max_steps_reached=False,
+                    agent_mode=self.agent_mode,
+                    pending_interaction=tool_result.interaction,
+                )
 
         await emit_agent_event(
             event_emitter,

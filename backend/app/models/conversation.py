@@ -20,6 +20,8 @@ class Conversation(SQLModel, table=True):
         index=True,
     )
     title: str = Field(default=DEFAULT_CONVERSATION_TITLE, max_length=255)
+    agent_execution_claim_id: str | None = Field(default=None, max_length=64)
+    agent_execution_claimed_at: datetime | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

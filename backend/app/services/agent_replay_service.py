@@ -18,11 +18,14 @@ from app.core.agent_modes import AGENT_MODE_REACT_TEXT
 from app.models.agent import (
     AGENT_INVOCATION_STATUS_COMPLETED,
     AGENT_INVOCATION_STATUS_MAX_STEPS_REACHED,
+    AGENT_INVOCATION_STATUS_NEEDS_INPUT,
     AgentInvocation,
     AgentStepRecord,
 )
 from app.models.conversation import ConversationMessage
 from app.tools.artifacts import ToolSourceArtifact
+from app.tools.clarifying_question import REQUEST_USER_INPUT_TOOL_NAME
+from app.tools.interactions import ClarificationRequest
 from app.tools.registry import ToolRegistry, ToolResult
 
 AGENT_REPLAY_FIXTURE_SCHEMA_VERSION = 1
@@ -35,7 +38,7 @@ ReplayCheckStatus = Literal[
     "not_applicable",
 ]
 ReplayAgentMode = Literal["react_text", "native_tool_calling"]
-ReplayInvocationStatus = Literal["completed", "max_steps_reached"]
+ReplayInvocationStatus = Literal["completed", "max_steps_reached", "needs_input"]
 
 
 class AgentReplayError(Exception):
@@ -71,7 +74,16 @@ class AgentReplayInvocation(BaseModel):
     provider: str | None = None
     model: str | None = None
     input_message: str
-    answer: str
+    answer: str | None = None
+
+    @model_validator(mode="after")
+    def validate_answer_for_status(self) -> "AgentReplayInvocation":
+        if self.status == AGENT_INVOCATION_STATUS_NEEDS_INPUT:
+            if self.answer is not None:
+                raise ValueError("needs_input replay invocations cannot have an answer")
+        elif self.answer is None:
+            raise ValueError("completed replay invocations require an answer")
+        return self
 
 
 class AgentReplayStep(BaseModel):
@@ -138,14 +150,26 @@ class AgentReplayService:
         if invocation is None:
             raise AgentReplayExportError(f"agent invocation not found: {invocation_id}")
 
-        assistant_message = session.get(
-            ConversationMessage,
-            invocation.assistant_message_id,
-        )
-        if assistant_message is None:
+        assistant_message = None
+        if invocation.assistant_message_id is not None:
+            assistant_message = session.get(
+                ConversationMessage,
+                invocation.assistant_message_id,
+            )
+        if (
+            invocation.status != AGENT_INVOCATION_STATUS_NEEDS_INPUT
+            and assistant_message is None
+        ):
             raise AgentReplayExportError(
                 "agent invocation assistant message is missing: "
                 f"{invocation.assistant_message_id}"
+            )
+        if (
+            invocation.status == AGENT_INVOCATION_STATUS_NEEDS_INPUT
+            and assistant_message is not None
+        ):
+            raise AgentReplayExportError(
+                "needs_input agent invocation cannot have an assistant message"
             )
 
         records = session.exec(
@@ -154,6 +178,7 @@ class AgentReplayService:
             .order_by(AgentStepRecord.step_index.asc())
         ).all()
         try:
+            steps = [self._fixture_step(record) for record in records]
             fixture = AgentReplayFixture(
                 invocation=AgentReplayInvocation(
                     agent_mode=invocation.agent_mode,
@@ -161,7 +186,9 @@ class AgentReplayService:
                     provider=invocation.provider,
                     model=invocation.model,
                     input_message=invocation.input_message,
-                    answer=assistant_message.content,
+                    answer=(
+                        None if assistant_message is None else assistant_message.content
+                    ),
                 ),
                 metrics=AgentReplayMetrics(
                     max_steps=invocation.max_steps,
@@ -173,17 +200,32 @@ class AgentReplayService:
                     max_steps_reached=invocation.max_steps_reached,
                     total_latency_ms=invocation.total_latency_ms,
                 ),
-                steps=[self._fixture_step(record) for record in records],
-                sources=[
-                    ToolSourceArtifact.model_validate(source)
-                    for source in assistant_message.sources
-                ],
+                steps=steps,
+                sources=(
+                    self._artifact_sources(steps)
+                    if assistant_message is None
+                    else [
+                        ToolSourceArtifact.model_validate(source)
+                        for source in assistant_message.sources
+                    ]
+                ),
             )
         except ValidationError as exc:
             raise AgentReplayExportError(
                 "persisted agent invocation does not match the replay fixture contract"
             ) from exc
         return self._anonymize_document_ids(fixture)
+
+    def _artifact_sources(
+        self,
+        steps: list[AgentReplayStep],
+    ) -> list[ToolSourceArtifact]:
+        return [
+            ToolSourceArtifact.model_validate(source.model_dump(mode="json"))
+            for step in steps
+            if step.tool_result is not None
+            for source in step.tool_result.artifacts.sources
+        ]
 
     def replay_fixture(
         self,
@@ -224,6 +266,7 @@ class AgentReplayService:
             checks.append(self._registry_validation_check(step, tool_registry))
 
         checks.append(self._invocation_status_check(fixture))
+        checks.append(self._clarification_check(fixture))
         checks.append(self._source_snapshot_check(fixture))
         checks.append(self._derived_metrics_check(fixture))
         return AgentReplayReport(
@@ -482,6 +525,21 @@ class AgentReplayService:
             if fixture.metrics.max_steps_reached
             else AGENT_INVOCATION_STATUS_COMPLETED
         )
+        if fixture.invocation.status == AGENT_INVOCATION_STATUS_NEEDS_INPUT:
+            matches = (
+                not fixture.metrics.max_steps_reached
+                and fixture.invocation.answer is None
+            )
+            message = (
+                "Pending invocation status has no final answer."
+                if matches
+                else "needs_input invocations cannot have a final answer or max steps."
+            )
+            return AgentReplayCheck(
+                name="invocation_status",
+                status=REPLAY_CHECK_PASSED if matches else REPLAY_CHECK_FAILED,
+                message=message,
+            )
         matches = fixture.invocation.status == expected_status
         return AgentReplayCheck(
             name="invocation_status",
@@ -496,6 +554,115 @@ class AgentReplayService:
                 )
             ),
         )
+
+    def _clarification_check(
+        self,
+        fixture: AgentReplayFixture,
+    ) -> AgentReplayCheck:
+        clarification_steps = [
+            step
+            for step in fixture.steps
+            if step.tool_result is not None
+            and step.tool_result.interaction is not None
+            and step.tool_result.interaction.kind == "clarification"
+        ]
+        if not clarification_steps:
+            matches = fixture.invocation.status != AGENT_INVOCATION_STATUS_NEEDS_INPUT
+            return AgentReplayCheck(
+                name="clarification",
+                status=REPLAY_CHECK_PASSED if matches else REPLAY_CHECK_FAILED,
+                message=(
+                    "No clarification interaction was recorded."
+                    if matches
+                    else "needs_input invocation has no pending clarification step."
+                ),
+            )
+
+        if len(clarification_steps) != 1:
+            return AgentReplayCheck(
+                name="clarification",
+                status=REPLAY_CHECK_FAILED,
+                message="A replay invocation supports exactly one clarification step.",
+            )
+
+        step = clarification_steps[0]
+        interaction = step.tool_result.interaction
+        try:
+            request = ClarificationRequest.model_validate(step.action_input)
+        except ValidationError:
+            return AgentReplayCheck(
+                name="clarification",
+                status=REPLAY_CHECK_FAILED,
+                message="Clarification action input no longer matches its input model.",
+                step_index=step.step_index,
+            )
+        if (
+            step.action != REQUEST_USER_INPUT_TOOL_NAME
+            or interaction.request != request
+        ):
+            return AgentReplayCheck(
+                name="clarification",
+                status=REPLAY_CHECK_FAILED,
+                message="Clarification interaction does not match its recorded action.",
+                step_index=step.step_index,
+            )
+
+        resolution = interaction.resolution
+        if fixture.invocation.status == AGENT_INVOCATION_STATUS_NEEDS_INPUT:
+            matches = resolution is None
+            return AgentReplayCheck(
+                name="clarification",
+                status=REPLAY_CHECK_PASSED if matches else REPLAY_CHECK_FAILED,
+                message=(
+                    "Pending clarification remains unresolved."
+                    if matches
+                    else "needs_input invocation recorded a resolved clarification."
+                ),
+                step_index=step.step_index,
+            )
+
+        if resolution is None:
+            return AgentReplayCheck(
+                name="clarification",
+                status=REPLAY_CHECK_FAILED,
+                message="Completed invocation has an unresolved clarification.",
+                step_index=step.step_index,
+            )
+        if (
+            request.input_type == "choice"
+            and resolution.kind == "answered"
+            and resolution.answer not in request.choices
+        ):
+            return AgentReplayCheck(
+                name="clarification",
+                status=REPLAY_CHECK_FAILED,
+                message="Clarification choice answer is not one of the recorded choices.",
+                step_index=step.step_index,
+            )
+        expected_observation = self._clarification_observation(
+            resolution.kind, resolution.answer
+        )
+        matches = (
+            step.observation == expected_observation
+            and step.tool_result.content == expected_observation
+        )
+        return AgentReplayCheck(
+            name="clarification",
+            status=REPLAY_CHECK_PASSED if matches else REPLAY_CHECK_FAILED,
+            message=(
+                "Clarification resolution and observation agree."
+                if matches
+                else "Clarification resolution does not match its observation."
+            ),
+            step_index=step.step_index,
+        )
+
+    def _clarification_observation(self, kind: str, answer: str | None) -> str:
+        if kind == "answered":
+            return f"User answered clarification: {answer}"
+        if kind == "skipped":
+            return "User skipped the clarification request."
+        return "Clarification request timed out without a user response."
 
     def _source_snapshot_check(
         self,

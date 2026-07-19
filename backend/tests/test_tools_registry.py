@@ -148,6 +148,10 @@ def test_registry_returns_default_tool_policy_metadata():
     assert descriptions["workspace_document_search"].side_effects is False
     assert descriptions["workspace_document_search"].requires_confirmation is False
     assert descriptions["workspace_document_search"].allowed_in_agent_modes is None
+    assert descriptions["request_user_input"].risk_level == "low"
+    assert descriptions["request_user_input"].side_effects is False
+    assert descriptions["request_user_input"].requires_confirmation is False
+    assert descriptions["request_user_input"].allowed_in_agent_modes is None
 
 
 def test_registry_blocks_confirmation_required_tool_without_approval():
@@ -241,5 +245,6 @@ def test_default_tool_registry_includes_v4_tools():
 
     assert {description.name for description in registry.list_tools()} == {
         "calculator",
+        "request_user_input",
         "workspace_document_search",
     }

@@ -3,7 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from app.models.agent import AgentInvocation, AgentStepRecord
+from app.models.agent import (
+    AGENT_INVOCATION_STATUS_NEEDS_INPUT,
+    AgentInvocation,
+    AgentStepRecord,
+)
 from app.models.conversation import ConversationMessage
 from app.models.workspace import utc_now
 from app.services.agent_replay_service import (
@@ -13,6 +17,7 @@ from app.services.agent_replay_service import (
 )
 from app.tools.artifacts import ToolArtifacts, ToolSourceArtifact
 from app.tools.calculator import CalculatorTool
+from app.tools.interactions import ClarificationRequest, ToolInteraction
 from app.tools.registry import ToolRegistry, ToolResult, create_default_tool_registry
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "agent_replay"
@@ -45,6 +50,10 @@ def make_registry(*tools):
         "react_calculator_success.json",
         "react_parser_failure.json",
         "native_calculator_success.json",
+        "react_clarification_answered.json",
+        "react_clarification_skipped.json",
+        "react_clarification_timed_out.json",
+        "native_clarification_answered.json",
     ],
 )
 def test_synthetic_agent_replay_fixtures_pass(fixture_name):
@@ -275,6 +284,34 @@ def test_replay_preserves_registry_failure_boundaries(
     assert report.passed is True
 
 
+def test_replay_rejects_invalid_clarification_choice_resolution():
+    fixture = load_fixture("react_clarification_answered.json")
+    step = fixture.steps[0]
+    tool_result = step.tool_result.model_copy(
+        update={
+            "interaction": ToolInteraction(
+                kind="clarification",
+                request=ClarificationRequest.model_validate(step.action_input),
+                resolution={"kind": "answered", "answer": "unlisted"},
+            )
+        }
+    )
+    invalid_fixture = fixture.model_copy(
+        update={"steps": [step.model_copy(update={"tool_result": tool_result})]}
+    )
+
+    report = AgentReplayService().replay_fixture(
+        invalid_fixture,
+        create_default_tool_registry(),
+    )
+
+    assert report.passed is False
+    assert any(
+        check.name == "clarification" and check.status == "failed"
+        for check in report.checks
+    )
+
+
 def test_export_anonymizes_document_ids_and_omits_persistence_metadata(session):
     source = ToolSourceArtifact(
         document_id="real-document-id",
@@ -361,6 +398,100 @@ def test_export_anonymizes_document_ids_and_omits_persistence_metadata(session):
     assert "created_at" not in payload
     assert "started_at" not in payload
     assert "ended_at" not in payload
+
+
+def test_export_and_replay_support_pending_clarification(session):
+    source = ToolSourceArtifact(
+        document_id="pending-source-document-id",
+        original_filename="guide.txt",
+        chunk_index=0,
+        text="The workspace guide says annual reports use the standard format.",
+        score=0.91,
+    )
+    request = ClarificationRequest(
+        question="Which report should I prepare?",
+        input_type="choice",
+        choices=["annual", "market"],
+    )
+    invocation = AgentInvocation(
+        id="pending-invocation-id",
+        workspace_id="workspace-id",
+        conversation_id="conversation-id",
+        user_message_id="user-message-id",
+        input_message="Prepare the report.",
+        agent_mode="react_text",
+        status=AGENT_INVOCATION_STATUS_NEEDS_INPUT,
+        provider="fake",
+        model="fake-agent-model",
+        max_steps=3,
+        llm_call_count=2,
+        step_count=2,
+        tool_call_count=2,
+        failed_step_count=0,
+        source_count=1,
+        max_steps_reached=False,
+        total_latency_ms=7,
+        started_at=utc_now(),
+        pending_input={
+            **request.model_dump(mode="json"),
+            "expires_at": "2026-07-15T00:10:00+00:00",
+        },
+        resume_state={"system_prompt": "agent", "history": [], "temperature": None},
+    )
+    search_result = ToolResult(
+        ok=True,
+        content="Found relevant workspace document context.",
+        artifacts=ToolArtifacts(sources=[source]),
+    )
+    search_step = AgentStepRecord(
+        invocation_id=invocation.id,
+        step_index=1,
+        llm_output=(
+            "Action: workspace_document_search\n"
+            'Action Input: {"question": "report format"}'
+        ),
+        action="workspace_document_search",
+        action_input={"question": "report format"},
+        observation=search_result.content,
+        ok=True,
+        tool_result=search_result.model_dump(mode="json"),
+    )
+    clarification_result = ToolResult(
+        ok=True,
+        content="Clarification requested. Waiting for the user response.",
+        interaction=ToolInteraction(kind="clarification", request=request),
+    )
+    clarification_step = AgentStepRecord(
+        invocation_id=invocation.id,
+        step_index=2,
+        llm_output=(
+            "Action: request_user_input\n"
+            'Action Input: {"question": "Which report should I prepare?", '
+            '"input_type": "choice", "choices": ["annual", "market"]}'
+        ),
+        action="request_user_input",
+        action_input=request.model_dump(mode="json"),
+        observation=clarification_result.content,
+        ok=True,
+        tool_result=clarification_result.model_dump(mode="json"),
+    )
+    session.add(invocation)
+    session.add(search_step)
+    session.add(clarification_step)
+    session.commit()
+
+    fixture = AgentReplayService().export_invocation(session, invocation.id)
+    report = AgentReplayService().replay_fixture(
+        fixture,
+        create_default_tool_registry(),
+    )
+
+    assert fixture.invocation.status == AGENT_INVOCATION_STATUS_NEEDS_INPUT
+    assert fixture.invocation.answer is None
+    assert fixture.sources[0].document_id == "document_1"
+    assert fixture.steps[0].tool_result.artifacts.sources[0].document_id == "document_1"
+    assert fixture.steps[1].tool_result.interaction.resolution is None
+    assert report.passed is True
 
 
 def test_export_rejects_missing_invocation(session):
