@@ -33,7 +33,7 @@ POST /workspaces/{workspace_id}/conversations/{conversation_id}/agent
   -> ToolRegistry.run()
   -> calculator、workspace_document_search 或 request_user_input
   -> 完成，或以 needs_input pause 同一个 invocation
-  -> 保存 user/assistant messages（仅完成时）、agent invocation 和 ordered steps
+  -> AgentInvocationStore 保存 messages、agent invocation 和 ordered steps
 ```
 
 `POST .../agent/stream` 复用同一条业务链路，只在 executor/service 的显式边界发出有序事件，
@@ -49,7 +49,8 @@ backend/app/tools/interactions.py       -> clarification request、pending input
 backend/app/tools/clarifying_question.py -> request_user_input 工具
 backend/app/tools/calculator.py         -> 安全计算器工具
 backend/app/tools/document_tools.py     -> Workspace 文档搜索工具
-backend/app/services/agent_service.py   -> Workspace 边界、history、execution 和 persistence orchestration
+backend/app/services/agent_service.py   -> Workspace 边界、history 和 Agent lifecycle orchestration
+backend/app/services/agent_invocation_store.py -> execution claim、fencing 和 invocation persistence
 backend/app/api/agents.py               -> Workspace Conversation Agent API
 backend/app/api/schemas/agents.py       -> Agent request/response schema
 backend/app/core/agent_events.py        -> AgentEvent、事件类型和 emitter protocol
@@ -313,8 +314,13 @@ AgentService
 4. 从工具步骤的 `artifacts.sources` 中提取文档引用。
 5. 统计 agent metrics。
 6. 在非流式和流式调用中发出相同的业务事件。
-7. 完成时用一次数据库 transaction 保存 user/assistant messages、invocation 和 ordered steps；
-   pause 时立即保存 user message、pending invocation 和已有 steps，但不创建 assistant message。
+7. 将计算好的 status、metrics、resume payload 和 sources 交给 `AgentInvocationStore`；完成时保存
+   user/assistant messages、invocation 和 ordered steps，pause 时只保存 user message、pending
+   invocation 和已有 steps。
+
+`AgentInvocationStore` 集中负责 execution claim、lease renewal、fencing、message/invocation/step
+写入和 transaction rollback。`AgentService` 仍显式控制 heartbeat 的启动/停止和调用顺序，因此
+pause/continue 的 lifecycle 没有被隐藏到通用 repository 或状态机中。
 
 `query` 模式下，Agent system prompt 会额外提示模型：如果问题可能依赖 Workspace
 文档，应先使用 `workspace_document_search`。
@@ -549,7 +555,9 @@ Agent 的失败边界分层处理：
 - `backend/tests/test_native_tool_calling.py`：DeepSeek native tool calling executor、tool_calls、
   tool message 回传、failed step、多 tool call、clarification pause/resume 和 `max_steps`。
 - `backend/tests/test_agent_service.py`：Workspace context 注入、calculator、document search、
-  sources 提取、executor mode 选择、事件、approval、message/invocation/step persistence 和 rollback。
+  sources 提取、executor mode 选择、事件、approval 和 pause/continue lifecycle。
+- `backend/tests/test_agent_invocation_store.py`：execution claim、stale pause rollback、conversation
+  title 并发更新和 finalize fencing。
 - `backend/tests/test_agents_api.py`：Agent endpoint、messages endpoint 读回、failed tool step persistence、
   SSE 事件、approval、invocation scope、`agent_mode` 请求校验、native mode 和普通 chat 回归。
 - `backend/tests/test_agent_replay_service.py`：fixture parser/registry/artifact/clarification/metrics 回归、
@@ -560,6 +568,8 @@ Agent 的失败边界分层处理：
 
 - `backend/tests/test_agent_service.py::test_agent_service_returns_final_answer_and_saves_exchange`
   - 主 happy path，串起最终消息、invocation、ordered steps 和 metrics。
+- `backend/tests/test_agent_invocation_store.py::test_finalize_rolls_back_after_execution_claim_is_taken_over`
+  - persistence fencing 的关键边界：过期执行不能写入 assistant message 或完成 invocation。
 - `backend/tests/test_tools_registry.py::test_registry_blocks_confirmation_required_tool_without_approval`
   - policy gate 的关键安全边界：未批准时真实工具不能执行。
 - `backend/tests/test_agents_api.py::test_agent_stream_endpoint_streams_agent_events`

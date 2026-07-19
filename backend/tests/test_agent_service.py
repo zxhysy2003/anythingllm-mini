@@ -9,7 +9,6 @@ from app.core.agent_executor import (
     DEFAULT_AGENT_STEPS,
     MAX_STEPS_ANSWER,
     AgentRunResult,
-    AgentStep,
 )
 from app.core.agent_loop import ReactTextAgentExecutor
 from app.core.agent_modes import (
@@ -25,8 +24,10 @@ from app.models.agent import (
     AgentStepRecord,
 )
 from app.models.conversation import Conversation, ConversationMessage
+import app.services.agent_invocation_store as agent_invocation_store_module
 import app.services.agent_service as agent_service_module
-from app.services.agent_service import AGENT_EXECUTION_CLAIM_LEASE, AgentService
+from app.services.agent_invocation_store import AGENT_EXECUTION_CLAIM_LEASE
+from app.services.agent_service import AgentService
 from app.services.chat_service import ChatResult
 from app.services.exceptions import (
     AgentInvocationConflictError,
@@ -39,7 +40,6 @@ from app.services.workspace_service import WorkspaceService
 from app.tools.calculator import CalculatorTool
 from app.tools.clarifying_question import ClarifyingQuestionTool
 from app.tools.document_tools import WorkspaceDocumentSearchTool
-from app.tools.interactions import ClarificationRequest, ToolInteraction
 from app.tools.registry import (
     TOOL_CONFIRMATION_REQUIRED,
     ToolContext,
@@ -500,7 +500,7 @@ def test_agent_service_rejects_continuation_already_claimed_by_another_request(s
     )
     invocation = session.get(AgentInvocation, paused.agent_invocation_id)
     assert invocation is not None
-    agent_service._claim_agent_execution(
+    agent_service.invocation_store.claim_execution(
         session,
         conversation,
         "other-request",
@@ -519,7 +519,7 @@ def test_agent_service_rejects_continuation_already_claimed_by_another_request(s
         )
 
     assert len(agent_chat.calls) == 1
-    agent_service._release_agent_execution(
+    agent_service.invocation_store.release_execution(
         session,
         workspace.id,
         conversation.id,
@@ -580,166 +580,6 @@ def test_agent_service_rejects_concurrent_initial_run_before_second_llm_call(ses
     assert result.answer == "first request completed"
     session.refresh(conversation)
     assert conversation.agent_execution_claim_id is None
-
-
-def test_agent_service_claim_blocks_initial_run_when_pending_state_appears(session):
-    agent_service, _, _, workspace, conversation = make_services(
-        session,
-        [
-            (
-                "Action: request_user_input\nAction Input: "
-                '{"question": "Which report?", "input_type": "text"}'
-            ),
-        ],
-        registry=make_registry(ClarifyingQuestionTool()),
-    )
-    paused = asyncio.run(
-        agent_service.run_in_conversation(
-            session,
-            workspace.id,
-            conversation.id,
-            "summarize a report",
-        )
-    )
-
-    with pytest.raises(AgentInvocationConflictError, match="active Agent execution"):
-        agent_service._claim_agent_execution(session, conversation, "late-initial-run")
-
-    session.refresh(conversation)
-    assert conversation.agent_execution_claim_id is None
-    assert session.get(AgentInvocation, paused.agent_invocation_id) is not None
-
-
-def test_agent_service_returns_conflict_when_stale_execution_late_pauses(session):
-    agent_service, _, _, workspace, conversation = make_services(
-        session,
-        [
-            (
-                "Action: request_user_input\nAction Input: "
-                '{"question": "Which report?", "input_type": "text"}'
-            ),
-        ],
-        registry=make_registry(ClarifyingQuestionTool()),
-    )
-    current_pause = asyncio.run(
-        agent_service.run_in_conversation(
-            session,
-            workspace.id,
-            conversation.id,
-            "current request",
-        )
-    )
-    current_invocation = session.get(AgentInvocation, current_pause.agent_invocation_id)
-    assert current_invocation is not None
-    agent_service._claim_agent_execution(
-        session,
-        conversation,
-        "new-request",
-        pending_invocation_id=current_invocation.id,
-    )
-
-    request = ClarificationRequest(
-        question="Which format should I use?",
-        input_type="text",
-    )
-    stale_result = AgentRunResult(
-        message="stale request",
-        answer=None,
-        steps=[
-            AgentStep(
-                step_index=1,
-                llm_output=(
-                    "Action: request_user_input\nAction Input: "
-                    '{"question": "Which format should I use?", '
-                    '"input_type": "text"}'
-                ),
-                action="request_user_input",
-                action_input=request.model_dump(),
-                observation="Clarification requested. Waiting for the user response.",
-                ok=True,
-                tool_result=ToolResult(
-                    ok=True,
-                    content="Clarification requested. Waiting for the user response.",
-                    interaction=ToolInteraction(
-                        kind="clarification",
-                        request=request,
-                    ),
-                ),
-            )
-        ],
-        agent_mode=AGENT_MODE_REACT_TEXT,
-        provider="fake",
-        model="fake-agent-model",
-        llm_call_count=1,
-        max_steps_reached=False,
-        pending_interaction=ToolInteraction(kind="clarification", request=request),
-    )
-    metrics = agent_service._metrics(
-        max_steps=3,
-        agent_result=stale_result,
-        total_latency_ms=1,
-    )
-
-    with pytest.raises(AgentInvocationConflictError, match="claim was lost"):
-        agent_service._save_pending_invocation(
-            session=session,
-            workspace_id=workspace.id,
-            conversation=conversation,
-            user_content="stale request",
-            agent_result=stale_result,
-            metrics=metrics,
-            pending_input=agent_service._pending_input(stale_result),
-            resume_state=agent_service_module.AgentResumeState(
-                system_prompt="Answer as an agent.",
-                history=[],
-                temperature=0.2,
-            ),
-            started_at=datetime.now(UTC),
-            execution_claim_id="old-request",
-        )
-
-    session.expire_all()
-    assert [message.content for message in list_messages(session)] == [
-        "current request"
-    ]
-    assert [invocation.id for invocation in list_invocations(session)] == [
-        current_invocation.id
-    ]
-    persisted_conversation = session.get(Conversation, conversation.id)
-    assert persisted_conversation is not None
-    assert persisted_conversation.agent_execution_claim_id == "new-request"
-
-
-def test_agent_service_preserves_title_updated_by_concurrent_normal_chat(session):
-    agent_service, _, _, workspace, conversation = make_services(
-        session,
-        [],
-        registry=make_registry(),
-    )
-    agent_service._claim_agent_execution(session, conversation, "agent-request")
-
-    with Session(session.get_bind()) as normal_chat_session:
-        normal_chat_conversation = normal_chat_session.get(
-            Conversation, conversation.id
-        )
-        assert normal_chat_conversation is not None
-        normal_chat_conversation.title = "normal chat title"
-        normal_chat_session.add(normal_chat_conversation)
-        normal_chat_session.commit()
-
-    agent_service._release_agent_execution_in_transaction(
-        session,
-        conversation,
-        "agent-request",
-        user_content="agent request title",
-    )
-    session.commit()
-    session.expire_all()
-
-    persisted_conversation = session.get(Conversation, conversation.id)
-    assert persisted_conversation is not None
-    assert persisted_conversation.title == "normal chat title"
-    assert persisted_conversation.agent_execution_claim_id is None
 
 
 def test_agent_service_rejects_initial_run_while_continue_is_executing(session):
@@ -812,7 +652,7 @@ def test_agent_service_rejects_initial_run_while_continue_is_executing(session):
 
 def test_agent_service_heartbeat_renews_a_slow_execution_claim(session, monkeypatch):
     monkeypatch.setattr(
-        agent_service_module,
+        agent_invocation_store_module,
         "AGENT_EXECUTION_CLAIM_LEASE",
         timedelta(milliseconds=100),
     )
@@ -953,82 +793,6 @@ def test_agent_service_reclaims_an_expired_execution_claim(session):
 
     assert completed.answer == "recovered from an interrupted continuation."
     assert len(agent_chat.calls) == 2
-
-
-def test_agent_service_fences_an_execution_that_lost_its_claim(session):
-    agent_service, _, _, workspace, conversation = make_services(
-        session,
-        [
-            (
-                "Action: request_user_input\nAction Input: "
-                '{"question": "Which report?", "input_type": "text"}'
-            ),
-        ],
-        registry=make_registry(ClarifyingQuestionTool()),
-    )
-    paused = asyncio.run(
-        agent_service.run_in_conversation(
-            session,
-            workspace.id,
-            conversation.id,
-            "summarize a report",
-        )
-    )
-    invocation = session.get(AgentInvocation, paused.agent_invocation_id)
-    assert invocation is not None
-    agent_service._claim_agent_execution(
-        session,
-        conversation,
-        "old-request",
-        pending_invocation_id=invocation.id,
-    )
-    conversation.agent_execution_claimed_at = (
-        datetime.now(UTC) - AGENT_EXECUTION_CLAIM_LEASE
-    )
-    session.add(conversation)
-    session.commit()
-    agent_service._claim_agent_execution(
-        session,
-        conversation,
-        "new-request",
-        pending_invocation_id=invocation.id,
-    )
-
-    agent_result = AgentRunResult(
-        message="summarize a report",
-        answer="stale answer",
-        steps=[],
-        agent_mode=AGENT_MODE_REACT_TEXT,
-        provider="fake",
-        model="fake-agent-model",
-        llm_call_count=2,
-        max_steps_reached=False,
-    )
-    metrics = agent_service._metrics(
-        max_steps=invocation.max_steps,
-        agent_result=agent_result,
-        total_latency_ms=1,
-    )
-
-    with pytest.raises(AgentInvocationConflictError, match="claim was lost"):
-        agent_service._finalize_invocation(
-            session=session,
-            invocation=invocation,
-            conversation=conversation,
-            agent_result=agent_result,
-            metrics=metrics,
-            sources=[],
-            ended_at=datetime.now(UTC),
-            execution_claim_id="old-request",
-        )
-
-    session.expire_all()
-    invocation = session.get(AgentInvocation, paused.agent_invocation_id)
-    assert invocation is not None
-    assert invocation.status == AGENT_INVOCATION_STATUS_NEEDS_INPUT
-    session.refresh(conversation)
-    assert conversation.agent_execution_claim_id == "new-request"
-    assert [message.role for message in list_messages(session)] == ["user"]
 
 
 def test_agent_service_releases_execution_claim_after_initial_run_error(session):
