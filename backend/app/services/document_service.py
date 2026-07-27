@@ -184,6 +184,27 @@ class DocumentService:
             parsed_path,
         )
 
+    async def read_parsed_text(
+        self,
+        document_id: str,
+        parsed_path: str,
+        *,
+        expected_character_count: int,
+    ) -> str:
+        try:
+            parsed_file = self._validate_parsed_path(document_id, parsed_path)
+            content = await asyncio.to_thread(parsed_file.read_text, encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("parsed document must be UTF-8 encoded") from exc
+        except (OSError, RuntimeError) as exc:
+            raise ValueError("parsed document could not be read") from exc
+        content = content.strip()
+        if not content:
+            raise ValueError("parsed document content is empty")
+        if len(content) != expected_character_count:
+            raise ValueError("parsed document character count does not match metadata")
+        return content
+
     def _resolve_storage_dir(self, storage_dir: str | Path) -> Path:
         path = Path(storage_dir)
         if not path.is_absolute():
@@ -223,6 +244,19 @@ class DocumentService:
             raise ValueError("file extension does not match saved metadata")
 
         return source_path
+
+    def _validate_parsed_path(self, document_id: str, parsed_path: str) -> Path:
+        if not re.fullmatch(r"[0-9a-f]{32}", document_id):
+            raise ValueError("invalid document id")
+        path = Path(parsed_path).resolve()
+        document_dir = (self.parsed_dir / document_id).resolve()
+        if path == document_dir or not path.is_relative_to(document_dir):
+            raise ValueError("invalid parsed path")
+        if path.suffix.lower() != ".txt":
+            raise ValueError("parsed document must be a text file")
+        if not path.is_file():
+            raise ValueError("parsed document does not exist")
+        return path
 
     def _extract_text(self, source_path: Path, extension: str) -> str:
         if extension == ".txt":

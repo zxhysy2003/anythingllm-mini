@@ -3,6 +3,7 @@ import json
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
+from sqlmodel import Session
 
 from app.tools.artifacts import ToolArtifacts
 from app.tools.interactions import ToolInteraction
@@ -15,12 +16,20 @@ TOOL_BLOCKED_BY_POLICY = "tool_blocked_by_policy"
 
 
 class ToolContext(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     workspace_id: str | None = None
     conversation_id: str | None = None
     agent_mode: str | None = None
     approved_tool_call_ids: set[str] = Field(default_factory=set)
     clarification_count: int = Field(default=0, ge=0)
     remaining_llm_calls: int | None = Field(default=None, ge=0)
+    session: Session | None = Field(default=None, exclude=True, repr=False)
+    progress_reporter: Any | None = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+    )
 
 
 class ToolResult(BaseModel):
@@ -190,12 +199,16 @@ class ToolRegistry:
 def create_default_tool_registry() -> ToolRegistry:
     from app.tools.calculator import CalculatorTool
     from app.tools.clarifying_question import ClarifyingQuestionTool
-    from app.tools.document_tools import WorkspaceDocumentSearchTool
+    from app.tools.document_tools import (
+        WorkspaceDocumentSearchTool,
+        WorkspaceDocumentSummaryTool,
+    )
 
     registry = ToolRegistry()
     registry.register(CalculatorTool())
     registry.register(ClarifyingQuestionTool())
     registry.register(WorkspaceDocumentSearchTool())
+    registry.register(WorkspaceDocumentSummaryTool())
     return registry
 
 

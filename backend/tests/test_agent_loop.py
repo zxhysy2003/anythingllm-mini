@@ -12,7 +12,9 @@ from app.core.agent_loop import (
 )
 from app.tools.calculator import CalculatorTool
 from app.tools.clarifying_question import ClarifyingQuestionTool
+from app.tools.artifacts import ToolArtifacts
 from app.tools.interactions import ClarificationResolution
+from app.core.tool_progress import ToolProgress
 from app.tools.registry import (
     TOOL_CONFIRMATION_REQUIRED,
     ToolContext,
@@ -69,6 +71,57 @@ class CaptureContextTool:
         self.seen_workspace_id = context.workspace_id
         self.seen_conversation_id = context.conversation_id
         return ToolResult(ok=True, content=f"captured {input_data.value}")
+
+
+class ProgressTool:
+    name = "progress_tool"
+    description = "Report safe tool progress."
+    input_model = CaptureInput
+    risk_level = "low"
+    side_effects = False
+    requires_confirmation = False
+    allowed_in_agent_modes = None
+
+    async def run(self, input_data, context):
+        for completed in (1, 2):
+            await context.progress_reporter.report(
+                ToolProgress(
+                    phase="summarizing",
+                    completed_units=completed,
+                    total_units=2,
+                    message=f"Processed {completed} of 2.",
+                )
+            )
+        return ToolResult(ok=True, content=f"processed {input_data.value}")
+
+
+class PartialSummaryTool:
+    name = "workspace_document_summary"
+    description = "Return a partial document summary."
+    input_model = CaptureInput
+    risk_level = "low"
+    side_effects = False
+    requires_confirmation = False
+    allowed_in_agent_modes = None
+
+    async def run(self, input_data, context):
+        del input_data, context
+        return ToolResult(
+            ok=True,
+            content=(
+                "Partial summary (covers only the first 2 of 5 sections; "
+                "reasons: max_chunks)."
+            ),
+            artifacts=ToolArtifacts(
+                outputs={
+                    "action": "summarize",
+                    "completion_status": "partial",
+                    "processed_chunks": 2,
+                    "total_chunks": 5,
+                    "stop_reasons": ["max_chunks"],
+                }
+            ),
+        )
 
 
 def make_registry(*tools):
@@ -186,6 +239,37 @@ def test_agent_calls_calculator_then_returns_final_answer():
     assert result.agent_mode == AGENT_MODE_REACT_TEXT
 
 
+def test_agent_appends_partial_summary_disclosure_to_final_answer():
+    result = run_agent(
+        [
+            ("Action: workspace_document_summary\n" 'Action Input: {"value": "guide"}'),
+            "Final Answer: Here is the available summary.",
+        ],
+        make_registry(PartialSummaryTool()),
+    )
+
+    assert result.answer == (
+        "Here is the available summary.\n\n"
+        "Coverage notice: this document summary is partial and covers only "
+        "the first 2 of 5 sections; reasons: max_chunks."
+    )
+
+
+def test_agent_preserves_partial_summary_disclosure_at_max_steps():
+    result = run_agent(
+        ["Action: workspace_document_summary\n" 'Action Input: {"value": "guide"}'],
+        make_registry(PartialSummaryTool()),
+        max_steps=1,
+    )
+
+    assert result.max_steps_reached is True
+    assert result.answer == (
+        f"{MAX_STEPS_ANSWER}\n\n"
+        "Coverage notice: this document summary is partial and covers only "
+        "the first 2 of 5 sections; reasons: max_chunks."
+    )
+
+
 def test_agent_pauses_for_clarification_and_resumes_with_remaining_budget():
     llm = FakeLLM(
         [
@@ -292,6 +376,45 @@ def test_agent_emits_llm_and_tool_events():
     ]
     assert emitter.events[2]["payload"]["tool_name"] == "calculator"
     assert emitter.events[3]["payload"]["step"]["observation"] == "3"
+
+
+def test_agent_emits_tool_progress_inside_one_persisted_step():
+    emitter = CollectingEventEmitter()
+    executor = ReactTextAgentExecutor(
+        llm=FakeLLM(
+            [
+                'Action: progress_tool\nAction Input: {"value": "document"}',
+                "Final Answer: completed",
+            ]
+        ),
+        tool_registry=make_registry(ProgressTool()),
+    )
+
+    result = asyncio.run(
+        executor.run(
+            "summarize",
+            ToolContext(),
+            system_prompt="system",
+            event_emitter=emitter,
+        )
+    )
+
+    assert len(result.steps) == 1
+    assert [event["type"] for event in emitter.events] == [
+        "llm_started",
+        "llm_finished",
+        "tool_started",
+        "tool_progress",
+        "tool_progress",
+        "tool_finished",
+        "llm_started",
+        "llm_finished",
+    ]
+    progress = emitter.events[3]["payload"]
+    assert progress["step_index"] == 1
+    assert progress["tool_call_id"] is None
+    assert progress["tool_name"] == "progress_tool"
+    assert progress["completed_units"] == 1
 
 
 def test_agent_records_invalid_tool_input_and_allows_final_answer():

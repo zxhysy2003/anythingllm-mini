@@ -55,8 +55,10 @@ from app.tools.registry import (
 CLARIFICATION_TIMEOUT = timedelta(minutes=10)
 AGENT_EXECUTION_CLAIM_HEARTBEAT_INTERVAL = timedelta(minutes=5)
 QUERY_MODE_AGENT_INSTRUCTION = (
-    "This workspace is in query mode. For questions that may depend on workspace "
-    "documents, use workspace_document_search before giving a final answer."
+    "This workspace is in query mode. For targeted questions that may depend on "
+    "workspace documents, use workspace_document_search before giving a final "
+    "answer. For listing documents or whole-document summaries, use "
+    "workspace_document_summary."
 )
 
 
@@ -217,6 +219,7 @@ class AgentService:
                     conversation_id=context.conversation.id,
                     agent_mode=agent_executor.agent_mode,
                     approved_tool_call_ids=set(approved_tool_call_ids or []),
+                    session=session,
                 ),
                 system_prompt=system_prompt,
                 history=context.history,
@@ -404,6 +407,7 @@ class AgentService:
                     workspace_id=workspace_id,
                     conversation_id=conversation_id,
                     agent_mode=agent_executor.agent_mode,
+                    session=session,
                 ),
                 system_prompt=resume_state.system_prompt,
                 history=resume_state.history,

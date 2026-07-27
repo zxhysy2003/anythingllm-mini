@@ -61,7 +61,8 @@ class QueueAgentEventEmitter:
         "Run a minimal workspace agent executor inside one conversation. "
         "The default mode is ReAct text, and requests may opt into DeepSeek "
         "native tool calling. The agent can call registered tools such as "
-        "calculator, workspace_document_search, and request_user_input. A "
+        "calculator, workspace_document_search, workspace_document_summary, and "
+        "request_user_input. A "
         "clarification returns needs_input instead of holding the HTTP request "
         "open; callers then continue the same separate agent invocation record."
     ),

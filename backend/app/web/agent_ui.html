@@ -1102,6 +1102,9 @@
           if (event.type === "tool_started") {
             return `Calling ${payload.tool_name || "-"}`;
           }
+          if (event.type === "tool_progress") {
+            return `${payload.tool_name || "-"} ${payload.phase || "working"} ${payload.completed_units ?? "-"}/${payload.total_units ?? "-"}: ${payload.message || ""}`;
+          }
           if (event.type === "tool_finished") {
             const step = payload.step || {};
             if (step.error === "tool_confirmation_required") {

@@ -2,13 +2,18 @@ import json
 from collections.abc import Sequence
 from typing import Any, Mapping, Protocol
 
-from app.core.agent_events import AgentEventEmitter, emit_agent_event
+from app.core.agent_events import (
+    AgentEventEmitter,
+    create_tool_progress_reporter,
+    emit_agent_event,
+)
 from app.core.agent_executor import (
     DEFAULT_AGENT_STEPS,
     MAX_AGENT_STEPS,
     MAX_STEPS_ANSWER,
     AgentRunResult,
     AgentStep,
+    append_partial_document_summary_disclosures,
 )
 from app.core.agent_modes import AGENT_MODE_NATIVE_TOOL_CALLING
 from app.core.llm import (
@@ -105,7 +110,10 @@ class DeepSeekNativeToolCallingExecutor:
             if not llm_result.tool_calls:
                 return AgentRunResult(
                     message=normalized_message,
-                    answer=llm_result.content,
+                    answer=append_partial_document_summary_disclosures(
+                        llm_result.content,
+                        steps,
+                    ),
                     steps=steps,
                     provider=provider,
                     model=model,
@@ -151,6 +159,7 @@ class DeepSeekNativeToolCallingExecutor:
                 step, observation = await self._run_tool_call(
                     step_index=step_index,
                     tool_call=tool_call,
+                    event_emitter=event_emitter,
                     context=context.model_copy(
                         update={
                             "agent_mode": context.agent_mode or self.agent_mode,
@@ -213,7 +222,10 @@ class DeepSeekNativeToolCallingExecutor:
         )
         return AgentRunResult(
             message=normalized_message,
-            answer=MAX_STEPS_ANSWER,
+            answer=append_partial_document_summary_disclosures(
+                MAX_STEPS_ANSWER,
+                steps,
+            ),
             steps=steps,
             provider=provider,
             model=model,
@@ -336,6 +348,7 @@ class DeepSeekNativeToolCallingExecutor:
         *,
         step_index: int,
         tool_call: DeepSeekToolCall,
+        event_emitter: AgentEventEmitter | None,
         context: ToolContext,
     ) -> tuple[AgentStep, str]:
         llm_output = self._tool_call_output(tool_call)
@@ -389,7 +402,16 @@ class DeepSeekNativeToolCallingExecutor:
         tool_result = await self.tool_registry.run(
             tool_call.name,
             action_input,
-            context,
+            context.model_copy(
+                update={
+                    "progress_reporter": create_tool_progress_reporter(
+                        event_emitter,
+                        step_index=step_index,
+                        tool_name=tool_call.name,
+                        tool_call_id=tool_call.id,
+                    )
+                }
+            ),
         )
         return (
             AgentStep(

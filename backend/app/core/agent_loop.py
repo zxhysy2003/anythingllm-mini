@@ -4,13 +4,18 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
-from app.core.agent_events import AgentEventEmitter, emit_agent_event
+from app.core.agent_events import (
+    AgentEventEmitter,
+    create_tool_progress_reporter,
+    emit_agent_event,
+)
 from app.core.agent_executor import (
     DEFAULT_AGENT_STEPS,
     MAX_AGENT_STEPS,
     MAX_STEPS_ANSWER,
     AgentRunResult,
     AgentStep,
+    append_partial_document_summary_disclosures,
 )
 from app.core.agent_modes import AGENT_MODE_REACT_TEXT
 from app.core.llm import DEFAULT_SYSTEM_PROMPT, ChatMessage
@@ -199,7 +204,10 @@ class ReactTextAgentExecutor:
             if parsed.is_final:
                 return AgentRunResult(
                     message=normalized_message,
-                    answer=parsed.answer or "",
+                    answer=append_partial_document_summary_disclosures(
+                        parsed.answer or "",
+                        steps,
+                    ),
                     steps=steps,
                     provider=provider,
                     model=model,
@@ -254,6 +262,11 @@ class ReactTextAgentExecutor:
                             )
                         ),
                         "remaining_llm_calls": max_steps - call_index,
+                        "progress_reporter": create_tool_progress_reporter(
+                            event_emitter,
+                            step_index=step_index,
+                            tool_name=parsed.action or "",
+                        ),
                     }
                 ),
             )
@@ -300,7 +313,10 @@ class ReactTextAgentExecutor:
         )
         return AgentRunResult(
             message=normalized_message,
-            answer=MAX_STEPS_ANSWER,
+            answer=append_partial_document_summary_disclosures(
+                MAX_STEPS_ANSWER,
+                steps,
+            ),
             steps=steps,
             provider=provider,
             model=model,

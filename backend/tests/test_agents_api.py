@@ -2,12 +2,14 @@ import json
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import BaseModel, Field
 
 from app.api import agents as agents_api
 from app.api import workspaces as workspaces_api
 from app.core.agent_modes import AGENT_MODE_REACT_TEXT
 from app.core.llm import DeepSeekToolCall, DeepSeekToolCallResult
 from app.core.native_tool_calling import DeepSeekNativeToolCallingExecutor
+from app.core.tool_progress import ToolProgress
 from app.db.session import get_session
 from app.main import app
 from app.services.agent_service import AgentService
@@ -22,6 +24,7 @@ from app.tools.registry import (
     TOOL_CONFIRMATION_REQUIRED,
     ToolContext,
     ToolRegistry,
+    ToolResult,
     build_tool_approval_id,
 )
 from tests.fakes import ConfirmationRequiredTool, FakeChatService, FakeRAGService
@@ -65,6 +68,31 @@ class ScriptedToolCallingClient:
             }
         )
         return self.responses[len(self.calls) - 1]
+
+
+class ProgressInput(BaseModel):
+    value: str = Field(min_length=1)
+
+
+class ProgressTool:
+    name = "progress_tool"
+    description = "Emit safe progress for the SSE API test."
+    input_model = ProgressInput
+    risk_level = "low"
+    side_effects = False
+    requires_confirmation = False
+    allowed_in_agent_modes = None
+
+    async def run(self, input_data, context):
+        await context.progress_reporter.report(
+            ToolProgress(
+                phase="summarizing",
+                completed_units=1,
+                total_units=2,
+                message="Summarized section 1 of 2.",
+            )
+        )
+        return ToolResult(ok=True, content=f"processed {input_data.value}")
 
 
 def native_tool_result(content, *, tool_calls=None, finish_reason="stop"):
@@ -258,6 +286,46 @@ def test_agent_stream_endpoint_streams_agent_events(agent_api):
     assert payload["agent_invocation_id"]
     assert payload["steps"][0]["action"] == "calculator"
     assert payload["metrics"]["tool_call_count"] == 1
+
+
+def test_agent_stream_endpoint_serializes_tool_progress(agent_api):
+    registry = ToolRegistry()
+    registry.register(ProgressTool())
+    client, _ = agent_api(
+        [
+            'Action: progress_tool\nAction Input: {"value": "document"}',
+            "Final Answer: completed",
+        ],
+        registry=registry,
+    )
+    workspace = create_workspace(client)
+    conversation = create_conversation(client, workspace["id"])
+
+    with client.stream(
+        "POST",
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}"
+        "/agent/stream",
+        json={"message": "summarize", "max_steps": 3},
+    ) as response:
+        events = parse_sse_events("".join(response.iter_text()))
+
+    event_names = [event["event"] for event in events]
+    assert event_names.index("tool_started") < event_names.index("tool_progress")
+    assert event_names.index("tool_progress") < event_names.index("tool_finished")
+    progress = next(
+        event["data"]["payload"]
+        for event in events
+        if event["event"] == "tool_progress"
+    )
+    assert progress == {
+        "phase": "summarizing",
+        "completed_units": 1,
+        "total_units": 2,
+        "message": "Summarized section 1 of 2.",
+        "step_index": 1,
+        "tool_call_id": None,
+        "tool_name": "progress_tool",
+    }
 
 
 def test_agent_api_pauses_and_continues_clarification(agent_api):

@@ -28,6 +28,7 @@ import app.services.agent_invocation_store as agent_invocation_store_module
 import app.services.agent_service as agent_service_module
 from app.services.agent_invocation_store import AGENT_EXECUTION_CLAIM_LEASE
 from app.services.agent_service import AgentService
+from app.services.agent_replay_service import AgentReplayService
 from app.services.chat_service import ChatResult
 from app.services.exceptions import (
     AgentInvocationConflictError,
@@ -38,6 +39,7 @@ from app.services.exceptions import (
 )
 from app.services.workspace_service import WorkspaceService
 from app.tools.calculator import CalculatorTool
+from app.tools.artifacts import ToolArtifacts, ToolSourceArtifact
 from app.tools.clarifying_question import ClarifyingQuestionTool
 from app.tools.document_tools import WorkspaceDocumentSearchTool
 from app.tools.registry import (
@@ -46,6 +48,7 @@ from app.tools.registry import (
     ToolRegistry,
     ToolResult,
     build_tool_approval_id,
+    create_default_tool_registry,
 )
 from tests.fakes import (
     CollectingEventEmitter,
@@ -134,11 +137,55 @@ class CaptureContextTool:
     def __init__(self):
         self.workspace_id = None
         self.conversation_id = None
+        self.session = None
 
     async def run(self, input_data, context):
         self.workspace_id = context.workspace_id
         self.conversation_id = context.conversation_id
+        self.session = context.session
         return ToolResult(ok=True, content=f"captured {input_data.value}")
+
+
+class DirectSummaryInput(BaseModel):
+    action: str
+    document_id: str
+
+
+class DirectSummaryTool:
+    name = "workspace_document_summary"
+    description = "Return a deterministic document summary fixture."
+    input_model = DirectSummaryInput
+    risk_level = "low"
+    side_effects = False
+    requires_confirmation = False
+    allowed_in_agent_modes = None
+
+    async def run(self, input_data, context):
+        assert context.session is not None
+        source = ToolSourceArtifact(
+            document_id=input_data.document_id,
+            original_filename="guide.txt",
+            chunk_index=0,
+            text="Direct document section.",
+            score=None,
+        )
+        return ToolResult(
+            ok=True,
+            content=(
+                "Partial summary of guide.txt (covers only the first 1 of 2 "
+                "sections; reasons: max_chunks):\nFirst section summary."
+            ),
+            artifacts=ToolArtifacts(
+                sources=[source],
+                outputs={
+                    "action": "summarize",
+                    "completion_status": "partial",
+                    "stop_reasons": ["max_chunks"],
+                    "processed_chunks": 1,
+                    "total_chunks": 2,
+                },
+            ),
+        )
 
 
 def make_chunk(
@@ -1093,6 +1140,7 @@ def test_agent_service_passes_tool_context_to_tools(session):
     assert result.answer == "captured"
     assert capture_tool.workspace_id == workspace.id
     assert capture_tool.conversation_id == conversation.id
+    assert capture_tool.session is session
 
 
 def test_agent_service_collects_workspace_document_search_sources(session):
@@ -1134,6 +1182,66 @@ def test_agent_service_collects_workspace_document_search_sources(session):
         result.sources[0].model_dump(mode="json"),
     ]
     assert assistant_message.metrics["source_count"] == 1
+
+
+def test_agent_summary_sources_and_partial_artifacts_persist_and_replay(session):
+    document_id = "b" * 32
+    agent_service, _, _, workspace, conversation = make_services(
+        session,
+        [
+            (
+                "Action: workspace_document_summary\n"
+                f'Action Input: {{"action": "summarize", "document_id": "{document_id}"}}'
+            ),
+            "Final Answer: Here is the available summary.",
+        ],
+        registry=make_registry(DirectSummaryTool()),
+    )
+
+    result = asyncio.run(
+        agent_service.run_in_conversation(
+            session,
+            workspace.id,
+            conversation.id,
+            "summarize the guide",
+        )
+    )
+
+    expected_answer = (
+        "Here is the available summary.\n\n"
+        "Coverage notice: this document summary is partial and covers only "
+        "the first 1 of 2 sections; reasons: max_chunks."
+    )
+    assert result.answer == expected_answer
+    assert len(result.steps) == 1
+    assert result.steps[0].ok is True
+    assert result.steps[0].tool_result.artifacts.outputs["completion_status"] == (
+        "partial"
+    )
+    assert result.sources[0].score is None
+    assert result.metrics.failed_step_count == 0
+    assistant_message = list_messages(session)[1]
+    assert assistant_message.content == expected_answer
+    assert assistant_message.sources[0]["score"] is None
+
+    invocation = agent_service.get_invocation(
+        session,
+        workspace.id,
+        conversation.id,
+        result.agent_invocation_id,
+    )
+    assert invocation.steps[0].tool_result.artifacts.sources[0].score is None
+    fixture = AgentReplayService().export_invocation(
+        session,
+        result.agent_invocation_id,
+    )
+    assert fixture.invocation.answer == expected_answer
+    assert (
+        AgentReplayService()
+        .replay_fixture(fixture, create_default_tool_registry())
+        .passed
+        is True
+    )
 
 
 def test_agent_service_does_not_pre_retrieve_workspace_context(session):

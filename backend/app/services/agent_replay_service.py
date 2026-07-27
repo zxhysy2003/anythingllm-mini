@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -25,7 +26,8 @@ from app.models.agent import (
 from app.models.conversation import ConversationMessage
 from app.tools.artifacts import ToolSourceArtifact
 from app.tools.clarifying_question import REQUEST_USER_INPUT_TOOL_NAME
-from app.tools.interactions import ClarificationRequest
+from app.tools.document_tools import WORKSPACE_DOCUMENT_SUMMARY_TOOL_NAME
+from app.tools.interactions import ClarificationRequest, ToolInteraction
 from app.tools.registry import ToolRegistry, ToolResult
 
 AGENT_REPLAY_FIXTURE_SCHEMA_VERSION = 1
@@ -333,34 +335,172 @@ class AgentReplayService:
         self,
         fixture: AgentReplayFixture,
     ) -> AgentReplayFixture:
+        document_ids: list[str] = []
+        seen_document_ids: set[str] = set()
+
+        def register_document_id(document_id: str) -> None:
+            if document_id not in seen_document_ids:
+                document_ids.append(document_id)
+                seen_document_ids.add(document_id)
+
+        def collect_structured_document_ids(value: JsonValue) -> None:
+            if isinstance(value, dict):
+                for key, nested_value in value.items():
+                    if key == "document_id" and isinstance(nested_value, str):
+                        register_document_id(nested_value)
+                        continue
+                    if key == "candidate_document_ids" and isinstance(
+                        nested_value, list
+                    ):
+                        for document_id in nested_value:
+                            if isinstance(document_id, str):
+                                register_document_id(document_id)
+                        continue
+                    collect_structured_document_ids(nested_value)
+                return
+            if isinstance(value, list):
+                for item in value:
+                    collect_structured_document_ids(item)
+
+        for step in fixture.steps:
+            if step.tool_result is not None:
+                for source in step.tool_result.artifacts.sources:
+                    register_document_id(source.document_id)
+            if step.action == WORKSPACE_DOCUMENT_SUMMARY_TOOL_NAME:
+                collect_structured_document_ids(step.action_input)
+                if step.tool_result is not None:
+                    collect_structured_document_ids(step.tool_result.artifacts.outputs)
+                    collect_structured_document_ids(step.tool_result.error_details)
+        for source in fixture.sources:
+            register_document_id(source.document_id)
+
         aliases: dict[str, str] = {}
+        next_alias_index = 1
+        for document_id in document_ids:
+            while True:
+                candidate = f"{next_alias_index:032x}"
+                next_alias_index += 1
+                if (
+                    candidate not in seen_document_ids
+                    and candidate not in aliases.values()
+                ):
+                    aliases[document_id] = candidate
+                    break
+        document_id_pattern = (
+            re.compile(
+                "|".join(
+                    re.escape(document_id)
+                    for document_id in sorted(document_ids, key=len, reverse=True)
+                )
+            )
+            if document_ids
+            else None
+        )
+
+        def anonymize_text(value: str) -> str:
+            if document_id_pattern is None:
+                return value
+            return document_id_pattern.sub(
+                lambda match: aliases[match.group(0)],
+                value,
+            )
+
+        def anonymize_json(value: JsonValue) -> JsonValue:
+            if isinstance(value, dict):
+                return {
+                    key: anonymize_json(nested_value)
+                    for key, nested_value in value.items()
+                }
+            if isinstance(value, list):
+                return [anonymize_json(item) for item in value]
+            if isinstance(value, str):
+                return aliases.get(value, anonymize_text(value))
+            return value
 
         def anonymize_source(source: ToolSourceArtifact) -> ToolSourceArtifact:
-            alias = aliases.setdefault(
-                source.document_id,
-                f"document_{len(aliases) + 1}",
+            return source.model_copy(
+                update={
+                    "document_id": aliases[source.document_id],
+                    "original_filename": anonymize_text(source.original_filename),
+                    "text": anonymize_text(source.text),
+                }
             )
-            return source.model_copy(update={"document_id": alias})
+
+        def anonymize_interaction(
+            interaction: ToolInteraction | None,
+        ) -> ToolInteraction | None:
+            if interaction is None:
+                return None
+            request = interaction.request.model_copy(
+                update={
+                    "question": anonymize_text(interaction.request.question),
+                    "choices": [
+                        anonymize_text(choice) for choice in interaction.request.choices
+                    ],
+                }
+            )
+            resolution = interaction.resolution
+            if resolution is not None and resolution.answer is not None:
+                resolution = resolution.model_copy(
+                    update={"answer": anonymize_text(resolution.answer)}
+                )
+            return interaction.model_copy(
+                update={
+                    "request": request,
+                    "resolution": resolution,
+                }
+            )
 
         anonymized_steps = []
         for step in fixture.steps:
             tool_result = step.tool_result
-            if tool_result is not None and tool_result.artifacts.sources:
+            if tool_result is not None:
                 artifacts = tool_result.artifacts.model_copy(
                     update={
                         "sources": [
                             anonymize_source(source)
                             for source in tool_result.artifacts.sources
-                        ]
+                        ],
+                        "outputs": anonymize_json(tool_result.artifacts.outputs),
                     }
                 )
-                tool_result = tool_result.model_copy(update={"artifacts": artifacts})
+                tool_result = tool_result.model_copy(
+                    update={
+                        "content": anonymize_text(tool_result.content),
+                        "artifacts": artifacts,
+                        "interaction": anonymize_interaction(tool_result.interaction),
+                        "error_details": anonymize_json(tool_result.error_details),
+                    }
+                )
             anonymized_steps.append(
-                step.model_copy(update={"tool_result": tool_result})
+                step.model_copy(
+                    update={
+                        "llm_output": anonymize_text(step.llm_output),
+                        "action_input": anonymize_json(step.action_input),
+                        "observation": (
+                            None
+                            if step.observation is None
+                            else anonymize_text(step.observation)
+                        ),
+                        "tool_result": tool_result,
+                    }
+                )
             )
 
         return fixture.model_copy(
             update={
+                "invocation": fixture.invocation.model_copy(
+                    update={
+                        "input_message": anonymize_text(
+                            fixture.invocation.input_message
+                        ),
+                        "answer": (
+                            None
+                            if fixture.invocation.answer is None
+                            else anonymize_text(fixture.invocation.answer)
+                        ),
+                    }
+                ),
                 "steps": anonymized_steps,
                 "sources": [anonymize_source(source) for source in fixture.sources],
             }

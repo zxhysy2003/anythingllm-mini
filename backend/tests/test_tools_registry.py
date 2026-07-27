@@ -247,4 +247,33 @@ def test_default_tool_registry_includes_v4_tools():
         "calculator",
         "request_user_input",
         "workspace_document_search",
+        "workspace_document_summary",
     }
+
+
+def test_document_summary_openai_schema_encodes_action_selector_contract():
+    registry = create_default_tool_registry()
+
+    summary_tool = next(
+        tool
+        for tool in registry.list_openai_tools()
+        if tool["function"]["name"] == "workspace_document_summary"
+    )
+    schema = summary_tool["function"]["parameters"]
+
+    assert schema["required"] == ["action"]
+    assert [variant["required"] for variant in schema["oneOf"]] == [
+        ["action"],
+        ["action", "document_id"],
+        ["action", "filename"],
+    ]
+    assert [
+        variant["properties"]["action"]["const"] for variant in schema["oneOf"]
+    ] == [
+        "list",
+        "summarize",
+        "summarize",
+    ]
+    assert schema["oneOf"][1]["properties"]["document_id"]["type"] == "string"
+    assert schema["oneOf"][2]["properties"]["filename"]["type"] == "string"
+    assert "exactly one" in summary_tool["function"]["description"]

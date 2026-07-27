@@ -14,13 +14,16 @@ AnythingLLM 时仍然值得学习的 Agent 开发内容。
 - `react_text` ReAct 文本执行器。
 - DeepSeek/OpenAI-compatible `native_tool_calling` 执行器。
 - 本地 `ToolRegistry`、`ToolContext`、`ToolResult`。
-- `calculator`、`workspace_document_search` 和 `request_user_input` 三个低风险工具。
+- `calculator`、`workspace_document_search`、`workspace_document_summary` 和
+  `request_user_input` 四个低风险工具。
 - `agent_invocations` / `agent_steps` 独立 persistence。
 - Agent conversation message metrics 中的轻量 `agent_invocation_id` 和汇总指标；完成时写在
   assistant message，pause 时写在已保存的 user message，供调试页恢复同一 invocation。
 - SSE-format over POST 的 Agent 事件流。
 - backend-first tool policy、静态风险元数据和 stateless approval id。
 - 单次、结构化的 `request_user_input` clarification tool，以及同一 invocation 的 pause/continue。
+- 同步、有界的 `workspace_document_summary`，包括 parsed text 安全读取、Map + Reduce、
+  `tool_progress`、direct-document sources 和 partial result。
 - 本地 replay fixture 导出和确定性 replay。
 - 一个用于替代重复 `curl`、展示事件 timeline 和 invocation detail 的薄 Agent 调试页：
   `backend/app/web/agent_ui.html`。
@@ -46,7 +49,7 @@ AnythingLLM 时仍然值得学习的 Agent 开发内容。
 | Tool policy、风险等级和用户批准 | 已实现第一版 | 等真实有副作用工具出现后，再补完整批准交互 |
 | Clarifying question 工具 | 已实现第一版 | 保持单次 clarification 和同一 invocation continue 的 lifecycle contract |
 | Tool selection 和工具 prompt 预算 | 延后触发 | 默认工具超过 5 个后再评估 |
-| 长文档总结工具 | 未实现 | P2，先打稳 artifact contract |
+| 长文档总结工具 | 已实现第一版 | 保持同步、有界的 Map + Reduce 和 partial contract |
 | Tool artifacts 统一返回 | 已实现第一版 | 保持 artifact contract 稳定，后续工具复用 `sources` / `outputs` |
 | Agent replay 和评估样例 | 已实现第一版 | 保持 fixture contract 稳定，以 synthetic fixtures 覆盖 regression 边界 |
 | 轻量 Agent flow | 未实现 | P3，不进入当前最小 Agent loop 主干 |
@@ -94,7 +97,7 @@ AnythingLLM 时仍然值得学习的 Agent 开发内容。
 已实现边界：
 
 - 已落地的只读事件流固定为：`agent_started`、`llm_started`、`llm_finished`、
-  `tool_started`、`tool_finished`、`parse_error`、`max_steps_reached`、
+  `tool_started`、`tool_progress`、`tool_finished`、`parse_error`、`max_steps_reached`、
   `agent_needs_input`、`agent_finished`、`agent_failed`。
 - 事件内容来自当前 executor 的显式步骤，不暴露隐藏 chain-of-thought。
 - `agent_ui.html` 可以显示运行中状态、工具 timeline、失败 step 和最终 invocation 结果。
@@ -131,7 +134,7 @@ pending approval persistence、多用户权限系统或完整 approval workflow�
 
 - 工具已经具有静态元数据：`risk_level`、`requires_confirmation`、`side_effects`、
   `allowed_in_agent_modes`。
-- 当前三个默认工具保持低风险、无需确认。
+- 当前四个默认工具保持低风险、无需确认。
 - `ToolRegistry.run()` 在执行前完成 agent mode 和 confirmation policy 判断。
 - 缺少批准时返回可解释 `ToolResult`，并由当前 Agent step/invocation `persistence` 记录。
 
@@ -188,8 +191,9 @@ pending approval persistence、多用户权限系统或完整 approval workflow�
 
 ### 4. Tool selection 和工具 prompt 预算
 
-状态：延后触发。当前默认工具有 `calculator`、`workspace_document_search` 和
-`request_user_input`，两个 executor 都注入全部工具，暂时没有 selector 或工具数量 metrics。
+状态：延后触发。当前默认工具有 `calculator`、`workspace_document_search`、
+`workspace_document_summary` 和 `request_user_input`，两个 executor 都注入全部工具，暂时没有
+selector 或工具数量 metrics。
 
 能力线：Agent capabilities、Observability and evaluation。
 
@@ -211,14 +215,14 @@ pending approval persistence、多用户权限系统或完整 approval workflow�
 
 最小验收：
 
-- selector 不影响当前三个默认工具。
+- selector 不影响当前四个默认工具。
 - 当工具集变大时，prompt 中只出现被选中的工具。
 - invocation metrics 能看到 `available_tool_count` 和 `selected_tool_count`。
 
 ### 5. 长文档总结工具
 
-状态：未实现。现有 `workspace_document_search` 只检索相关 chunk，不读取完整文档，也不做
-分块总结、进度事件或部分结果。
+状态：已实现第一版。`workspace_document_summary` 支持列出当前 workspace 文档、按 ID 或精确
+filename 读取安全的 parsed text、小文档单次摘要和长文档有界 Map + Reduce。
 
 能力线：Document lifecycle、RAG quality、Agent capabilities。
 
@@ -230,20 +234,26 @@ pending approval persistence、多用户权限系统或完整 approval workflow�
 - AnythingLLM 的 document summarizer 能列文档、读取完整内容，并在超出上下文时分块总结。
 - 这是学习“长任务工具”的好切片：token 预算、分块、进度、abort、source citation 都会出现。
 
-建议边界：
+已实现边界：
 
-- 第一版只允许总结当前 workspace 内已经解析成功的文档。
-- 工具输入使用 `document_id` 或精确 filename，不做跨 workspace 查找。
-- 大文档分块时限制最大 chunk 数，并记录每个 chunk 的 summary step。
-- 进度先复用 Agent 事件流，并在 `agent_ui.html` 中做最小展示。
+- 只允许总结当前 workspace 内已有数据库记录且 parsed text 校验成功的单个文档。
+- 一个低风险、只读工具支持 `list` / `summarize`；总结使用 `document_id` 或精确 filename，
+  同名文档要求改用 ID。
+- 默认按 4000 字符、无 overlap 分块，最多处理前 8 个 chunk；长文档顺序执行 Map + Reduce。
+- 超限、部分模型失败或 reduce 失败会返回带覆盖范围和 `stop_reasons` 的可用 partial；没有任何
+  可用 chunk summary 时才返回失败；executor 会把 partial 覆盖声明保留到最终 Agent answer。
+- `tool_progress` 只暴露 phase 和 N/M；一次工具调用仍只形成一个 Agent step，内部 chunk summaries
+  保存在 `artifacts.outputs`。
+- 直接文档 source 使用 `score=null`，只保留实际处理的 sections，并继续汇总到 assistant message
+  和 invocation detail。
 - 暂不做文件生成、附件注入或后台任务恢复。
 
 最小验收：
 
-- 列出可总结文档。
-- 小文档直接返回摘要。
-- 大文档按 chunk 总结，并在超限时返回清晰失败或部分结果。
-- sources 保留到 assistant message 和 invocation detail。
+- [x] 列出可总结文档。
+- [x] 小文档直接返回摘要。
+- [x] 大文档按 chunk 总结，并在超限时返回明确 partial。
+- [x] sources 保留到 assistant message 和 invocation detail。
 
 ### 6. Tool artifacts：sources、outputs、attachments 的统一返回
 
@@ -366,19 +376,18 @@ flow。
 后续任务只维护和复用这些基础，不再把它们列为待启动工作。只有出现真实有副作用工具
 时，才补 `agent_ui.html` 的最小批准交互。
 
-### P2：长任务工具
+### 已完成 P2：长任务工具
 
-1. 长文档总结工具。
+1. [x] 长文档总结工具第一版。
 
-该切片会引入进度和部分结果等新状态；现有 lifecycle/replay fixture 可以为这些状态增加
-确定性 regression fixtures。
-人工调试交互仍只加入 `agent_ui.html`。
+该切片已增加 `tool_progress`、有界 partial 和 direct-document sources；完整、超限 partial、
+模型失败 partial 均有 synthetic replay fixture。人工调试展示仍只在 `agent_ui.html`。
 
 ### 条件触发：Tool selection
 
 - 默认注册工具超过 5 个，或实际观察到工具 schema 明显挤占 prompt 时再启动。
 - 启动后先做确定性 top N selector 和工具数量 metrics，不做 embedding reranker。
-- 在触发条件出现前，不为当前三个默认工具增加选择抽象。
+- 在触发条件出现前，不为当前四个默认工具增加选择抽象。
 
 ### P3：最后学习工作流和平台化能力
 
@@ -388,17 +397,9 @@ flow。
 
 这类能力可以作为后续专题，不应该倒逼当前最小 agent loop 变复杂。
 
-## 下一步建议
+## 本切片完成后的判断
 
-如果只选一个最适合马上做的后端切片，建议从 **长文档总结工具** 开始：
-
-- 当前已有 artifact contract、lifecycle state 和 replay fixture，能够记录工具进度、source
-  snapshot 与部分结果的 regression 边界。
-- 它能把 V1/V2 的已解析文档能力和 V4 工具边界连起来，但仍可限制为同步、小范围切片。
-
-建议实现边界：
-
-1. 只允许总结当前 workspace 内已解析成功的单个文档。
-2. 小文档直接摘要；长文档先限定 chunk 数、上下文预算和明确失败边界。
-3. 每个分块结果都使用现有 artifact/source contract，避免把内部路径暴露给 API。
-4. 为小文档、超限和部分结果补合成 replay fixture。
+- 默认工具现为 4 个，仍低于 Tool selection 的触发条件，不增加 selector。
+- 真实 abort、中途批准、后台恢复和摘要文件生成继续留在第一版边界外，不为它们预留隐藏状态机。
+- 后续若继续这一能力线，应先用真实长文档观察摘要质量、latency 和 source payload，再决定是否学习
+  token 级预算、可恢复任务或更复杂的 summary strategy。

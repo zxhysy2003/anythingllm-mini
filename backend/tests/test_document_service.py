@@ -45,6 +45,21 @@ def delete_files(service: DocumentService, deletion_plan):
     return asyncio.run(service.delete_document_files(deletion_plan))
 
 
+def read_parsed_text(
+    service: DocumentService,
+    document_id: str,
+    parsed_path: Path,
+    expected_character_count: int,
+):
+    return asyncio.run(
+        service.read_parsed_text(
+            document_id,
+            str(parsed_path),
+            expected_character_count=expected_character_count,
+        )
+    )
+
+
 def test_save_txt_file(tmp_path):
     service = DocumentService(upload_dir=tmp_path)
     file = FakeUploadFile("hello.txt", b"hello world")
@@ -125,6 +140,95 @@ def test_build_document_file_deletion_plan_returns_safe_paths(tmp_path):
     assert plan.parsed_file == parsed_path.resolve()
     assert plan.upload_path == str(upload_path)
     assert plan.parsed_path == str(parsed_path)
+
+
+def test_read_parsed_text_validates_scope_and_character_count(tmp_path):
+    service = DocumentService(
+        upload_dir=tmp_path / "uploads",
+        parsed_dir=tmp_path / "parsed",
+    )
+    document_id = "a" * 32
+    parsed_path = service.parsed_dir / document_id / "guide.txt"
+    parsed_path.parent.mkdir(parents=True)
+    parsed_path.write_text("parsed document", encoding="utf-8")
+
+    assert read_parsed_text(service, document_id, parsed_path, 15) == (
+        "parsed document"
+    )
+
+    with pytest.raises(ValueError, match="character count"):
+        read_parsed_text(service, document_id, parsed_path, 14)
+
+
+def test_read_parsed_text_rejects_outside_and_missing_files(tmp_path):
+    service = DocumentService(
+        upload_dir=tmp_path / "uploads",
+        parsed_dir=tmp_path / "parsed",
+    )
+    document_id = "b" * 32
+    outside_path = tmp_path / "outside.txt"
+    outside_path.write_text("outside", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid parsed path"):
+        read_parsed_text(service, document_id, outside_path, 7)
+
+    missing_path = service.parsed_dir / document_id / "missing.txt"
+    with pytest.raises(ValueError, match="does not exist"):
+        read_parsed_text(service, document_id, missing_path, 7)
+
+
+def test_read_parsed_text_sanitizes_file_io_errors(tmp_path, monkeypatch):
+    service = DocumentService(
+        upload_dir=tmp_path / "uploads",
+        parsed_dir=tmp_path / "parsed",
+    )
+    document_id = "c" * 32
+    parsed_path = service.parsed_dir / document_id / "guide.txt"
+    parsed_path.parent.mkdir(parents=True)
+    parsed_path.write_text("parsed", encoding="utf-8")
+
+    def fail_read(path, *args, **kwargs):
+        raise PermissionError(13, "permission denied", str(path))
+
+    monkeypatch.setattr(Path, "read_text", fail_read)
+
+    with pytest.raises(ValueError, match="could not be read") as exc_info:
+        read_parsed_text(service, document_id, parsed_path, 6)
+
+    assert str(parsed_path) not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "validation_error",
+    [
+        PermissionError(13, "permission denied", "/private/parsed/guide.txt"),
+        RuntimeError("symlink loop at /private/parsed/guide.txt"),
+    ],
+)
+def test_read_parsed_text_sanitizes_path_validation_errors(
+    tmp_path,
+    monkeypatch,
+    validation_error,
+):
+    service = DocumentService(
+        upload_dir=tmp_path / "uploads",
+        parsed_dir=tmp_path / "parsed",
+    )
+
+    def fail_validation(*args, **kwargs):
+        raise validation_error
+
+    monkeypatch.setattr(service, "_validate_parsed_path", fail_validation)
+
+    with pytest.raises(ValueError, match="could not be read") as exc_info:
+        read_parsed_text(
+            service,
+            "d" * 32,
+            service.parsed_dir / ("d" * 32) / "guide.txt",
+            6,
+        )
+
+    assert "/private/parsed/guide.txt" not in str(exc_info.value)
 
 
 def test_build_document_file_deletion_plan_rejects_unsafe_paths(tmp_path):

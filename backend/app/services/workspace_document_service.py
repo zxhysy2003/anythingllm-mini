@@ -6,10 +6,12 @@ from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
+from app.core.safe_strings import select_safe_basename
 from app.models.document import WorkspaceDocument
 from app.models.workspace import Workspace
 from app.services.document_service import DocumentService, document_service
 from app.services.exceptions import (
+    WorkspaceDocumentAmbiguousError,
     WorkspaceDocumentNotFoundError,
     WorkspaceNotFoundError,
     WorkspacePersistenceError,
@@ -17,6 +19,16 @@ from app.services.exceptions import (
 from app.services.rag_service import RAGService, rag_service
 
 logger = logging.getLogger(__name__)
+
+
+def document_display_filename(
+    original_filename: str,
+    stored_filename: str,
+) -> str:
+    return select_safe_basename(
+        (original_filename, stored_filename),
+        field_name="original_filename",
+    )
 
 
 class WorkspaceDocumentDeleteResult(BaseModel):
@@ -51,6 +63,54 @@ class WorkspaceDocumentService:
             .order_by(WorkspaceDocument.created_at.desc())
         )
         return list(session.exec(statement).all())
+
+    def resolve_document(
+        self,
+        session: Session,
+        workspace_id: str,
+        *,
+        document_id: str | None = None,
+        filename: str | None = None,
+    ) -> WorkspaceDocument:
+        self._get_workspace(session, workspace_id)
+        if (document_id is None) == (filename is None):
+            raise ValueError("exactly one document selector is required")
+        if document_id is not None:
+            return self._get_workspace_document(session, workspace_id, document_id)
+
+        candidates = list(
+            session.exec(
+                select(WorkspaceDocument).where(
+                    WorkspaceDocument.workspace_id == workspace_id,
+                )
+            ).all()
+        )
+        documents = [
+            document
+            for document in candidates
+            if document_display_filename(
+                document.original_filename,
+                document.stored_filename,
+            )
+            == filename
+        ]
+        if not documents:
+            raise WorkspaceDocumentNotFoundError(
+                f"document not found in workspace: {filename}"
+            )
+        if len(documents) > 1:
+            raise WorkspaceDocumentAmbiguousError(
+                filename or "",
+                sorted(document.id for document in documents),
+            )
+        return documents[0]
+
+    async def read_document_text(self, document: WorkspaceDocument) -> str:
+        return await self.documents.read_parsed_text(
+            document.id,
+            document.parsed_path,
+            expected_character_count=document.character_count,
+        )
 
     async def upload_document(
         self,

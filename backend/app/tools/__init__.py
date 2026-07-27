@@ -3,6 +3,8 @@ from app.tools.calculator import CalculatorInput, CalculatorTool
 from app.tools.document_tools import (
     WorkspaceDocumentSearchInput,
     WorkspaceDocumentSearchTool,
+    WorkspaceDocumentSummaryInput,
+    WorkspaceDocumentSummaryTool,
 )
 from app.tools.registry import (
     BaseTool,
@@ -42,6 +44,8 @@ __all__ = [
     "ToolSourceArtifact",
     "WorkspaceDocumentSearchInput",
     "WorkspaceDocumentSearchTool",
+    "WorkspaceDocumentSummaryInput",
+    "WorkspaceDocumentSummaryTool",
     "build_tool_approval_id",
     "create_default_tool_registry",
 ]

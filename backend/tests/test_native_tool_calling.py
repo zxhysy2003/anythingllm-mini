@@ -6,9 +6,11 @@ from app.core.agent_executor import MAX_STEPS_ANSWER
 from app.core.agent_modes import AGENT_MODE_NATIVE_TOOL_CALLING
 from app.core.llm import DeepSeekToolCall, DeepSeekToolCallResult
 from app.core.native_tool_calling import DeepSeekNativeToolCallingExecutor
+from app.tools.artifacts import ToolArtifacts
 from app.tools.calculator import CalculatorTool
 from app.tools.clarifying_question import ClarifyingQuestionTool
 from app.tools.interactions import ClarificationResolution
+from app.core.tool_progress import ToolProgress
 from app.tools.registry import (
     TOOL_CONFIRMATION_REQUIRED,
     ToolContext,
@@ -52,6 +54,56 @@ class CaptureContextTool:
         self.workspace_id = context.workspace_id
         self.conversation_id = context.conversation_id
         return ToolResult(ok=True, content=f"captured {input_data.value}")
+
+
+class ProgressTool:
+    name = "progress_tool"
+    description = "Report safe tool progress."
+    input_model = CaptureInput
+    risk_level = "low"
+    side_effects = False
+    requires_confirmation = False
+    allowed_in_agent_modes = None
+
+    async def run(self, input_data, context):
+        await context.progress_reporter.report(
+            ToolProgress(
+                phase="summarizing",
+                completed_units=1,
+                total_units=1,
+                message="Processed 1 of 1.",
+            )
+        )
+        return ToolResult(ok=True, content=f"processed {input_data.value}")
+
+
+class PartialSummaryTool:
+    name = "workspace_document_summary"
+    description = "Return a partial document summary."
+    input_model = CaptureInput
+    risk_level = "low"
+    side_effects = False
+    requires_confirmation = False
+    allowed_in_agent_modes = None
+
+    async def run(self, input_data, context):
+        del input_data, context
+        return ToolResult(
+            ok=True,
+            content=(
+                "Partial summary (covers only the first 2 of 5 sections; "
+                "reasons: max_chunks)."
+            ),
+            artifacts=ToolArtifacts(
+                outputs={
+                    "action": "summarize",
+                    "completion_status": "partial",
+                    "processed_chunks": 2,
+                    "total_chunks": 5,
+                    "stop_reasons": ["max_chunks"],
+                }
+            ),
+        )
 
 
 def make_registry(*tools):
@@ -140,6 +192,109 @@ def test_native_executor_calls_calculator_then_returns_final_answer():
         "tool_call_id": "call-1",
         "content": "7",
     }
+
+
+def test_native_executor_appends_partial_summary_disclosure_to_final_answer():
+    client = ScriptedToolCallingClient(
+        [
+            tool_result(
+                "",
+                tool_calls=[
+                    tool_call(
+                        "workspace_document_summary",
+                        '{"value": "guide"}',
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            tool_result("Here is the available summary."),
+        ]
+    )
+    executor = DeepSeekNativeToolCallingExecutor(
+        llm=client,
+        tool_registry=make_registry(PartialSummaryTool()),
+    )
+
+    result = asyncio.run(executor.run("summarize", ToolContext()))
+
+    assert result.answer == (
+        "Here is the available summary.\n\n"
+        "Coverage notice: this document summary is partial and covers only "
+        "the first 2 of 5 sections; reasons: max_chunks."
+    )
+
+
+def test_native_executor_preserves_partial_summary_disclosure_at_max_steps():
+    client = ScriptedToolCallingClient(
+        [
+            tool_result(
+                "",
+                tool_calls=[
+                    tool_call(
+                        "workspace_document_summary",
+                        '{"value": "guide"}',
+                    )
+                ],
+                finish_reason="tool_calls",
+            )
+        ]
+    )
+    executor = DeepSeekNativeToolCallingExecutor(
+        llm=client,
+        tool_registry=make_registry(PartialSummaryTool()),
+    )
+
+    result = asyncio.run(executor.run("summarize", ToolContext(), max_steps=1))
+
+    assert result.max_steps_reached is True
+    assert result.answer == (
+        f"{MAX_STEPS_ANSWER}\n\n"
+        "Coverage notice: this document summary is partial and covers only "
+        "the first 2 of 5 sections; reasons: max_chunks."
+    )
+
+
+def test_native_executor_emits_tool_progress_with_tool_call_id():
+    emitter = CollectingEventEmitter()
+    client = ScriptedToolCallingClient(
+        [
+            tool_result(
+                "",
+                tool_calls=[
+                    tool_call(
+                        "progress_tool",
+                        '{"value": "document"}',
+                        call_id="summary-call",
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            tool_result("completed"),
+        ]
+    )
+    executor = DeepSeekNativeToolCallingExecutor(
+        llm=client,
+        tool_registry=make_registry(ProgressTool()),
+    )
+
+    result = asyncio.run(
+        executor.run("summarize", ToolContext(), event_emitter=emitter)
+    )
+
+    assert len(result.steps) == 1
+    assert [event["type"] for event in emitter.events] == [
+        "llm_started",
+        "llm_finished",
+        "tool_started",
+        "tool_progress",
+        "tool_finished",
+        "llm_started",
+        "llm_finished",
+    ]
+    progress = emitter.events[3]["payload"]
+    assert progress["step_index"] == 1
+    assert progress["tool_call_id"] == "summary-call"
+    assert progress["tool_name"] == "progress_tool"
 
 
 def test_native_executor_pauses_and_continues_clarification():

@@ -31,7 +31,7 @@ POST /workspaces/{workspace_id}/conversations/{conversation_id}/agent
   -> ReactTextAgentExecutor.run() 或 DeepSeekNativeToolCallingExecutor.run()
   -> ReAct parser 或 DeepSeek tool_calls
   -> ToolRegistry.run()
-  -> calculator、workspace_document_search 或 request_user_input
+  -> calculator、workspace_document_search、workspace_document_summary 或 request_user_input
   -> 完成，或以 needs_input pause 同一个 invocation
   -> AgentInvocationStore 保存 messages、agent invocation 和 ordered steps
 ```
@@ -48,7 +48,8 @@ backend/app/tools/artifacts.py          -> ToolArtifacts、source/output contrac
 backend/app/tools/interactions.py       -> clarification request、pending input 与 resolution contract
 backend/app/tools/clarifying_question.py -> request_user_input 工具
 backend/app/tools/calculator.py         -> 安全计算器工具
-backend/app/tools/document_tools.py     -> Workspace 文档搜索工具
+backend/app/tools/document_tools.py     -> Workspace 文档搜索和长文档总结工具
+backend/app/services/document_summary_service.py -> 有界 Map + Reduce 摘要服务
 backend/app/services/agent_service.py   -> Workspace 边界、history 和 Agent lifecycle orchestration
 backend/app/services/agent_invocation_store.py -> execution claim、fencing 和 invocation persistence
 backend/app/api/agents.py               -> Workspace Conversation Agent API
@@ -168,6 +169,7 @@ clarification request 及其 answered/skipped/timed_out resolution。
 
 - `calculator`
 - `workspace_document_search`
+- `workspace_document_summary`
 - `request_user_input`
 
 ## Tool Policy
@@ -197,8 +199,9 @@ clarification request 及其 answered/skipped/timed_out resolution。
 通过 `approved_tool_call_ids` 回传这个 ID，registry 再次校验相同动作后才放行。
 
 这个边界目前是 stateless retry，不是完整的 pause/resume workflow：没有 pending approval 表、过期
-时间、用户身份绑定或前端确认按钮。默认 `calculator`、`workspace_document_search` 和
-`request_user_input` 都是低风险、无副作用工具，因此真实确认路径主要由测试工具刻画。
+时间、用户身份绑定或前端确认按钮。默认 `calculator`、`workspace_document_search`、
+`workspace_document_summary` 和 `request_user_input` 都是低风险、无副作用工具，因此真实确认
+路径主要由测试工具刻画。
 
 ## Clarifying Question 与 Invocation Lifecycle
 
@@ -300,6 +303,13 @@ AgentService
 - Workspace Chat：系统固定先检索，再决定是否调用 LLM。
 - Workspace Agent：模型可以先回答，也可以主动调用文档搜索工具，再根据 observation 回答。
 
+`workspace_document_summary` 与搜索工具职责不同：它按 workspace 和文档 selector 读取完整 parsed
+text，小文档单次摘要，长文档按无 overlap sections 顺序执行有界 Map + Reduce。每个已处理 section
+通过 `score=null` 的 direct source citation 保留；实时 `tool_progress` 只报告 phase 和 N/M，一次
+总结调用仍只持久化为一个 Agent step。上传文件名不进入内部 summary LLM prompt；超限或已有部分
+结果后的模型失败返回明确 partial，executor 会在最终 answer 中保留覆盖声明，但不进入新的
+invocation lifecycle 状态。
+
 ## AgentService
 
 `AgentService.run_in_conversation()` 是 Agent 的 Workspace 边界。
@@ -322,8 +332,8 @@ AgentService
 写入和 transaction rollback。`AgentService` 仍显式控制 heartbeat 的启动/停止和调用顺序，因此
 pause/continue 的 lifecycle 没有被隐藏到通用 repository 或状态机中。
 
-`query` 模式下，Agent system prompt 会额外提示模型：如果问题可能依赖 Workspace
-文档，应先使用 `workspace_document_search`。
+`query` 模式下，Agent system prompt 会额外提示模型：定点文档问题使用
+`workspace_document_search`；列文档或整篇总结使用 `workspace_document_summary`。
 
 Agent 不会像 Workspace chat 一样在运行前自动调用 RAG。是否搜索文档仍由模型通过工具调用
 决定；`query` mode 当前是 prompt 指令，不是硬编码的 doc-only executor。
@@ -343,6 +353,7 @@ agent_started
 llm_started
 llm_finished
 tool_started
+tool_progress
 tool_finished
 parse_error
 max_steps_reached
@@ -548,8 +559,10 @@ Agent 的失败边界分层处理：
   agent mode gate 和 confirmation approval。
 - `backend/tests/test_tool_artifacts.py`：artifact 默认值、JSON/数量/长度约束和路径安全边界。
 - `backend/tests/test_calculator_tool.py`：安全计算器的支持表达式、拒绝危险表达式、除零和大数边界。
-- `backend/tests/test_document_tools.py`：Workspace 文档搜索工具的 workspace 约束、参数透传、
-  sources 返回和无结果行为。
+- `backend/tests/test_document_tools.py`：Workspace 文档搜索与总结工具的 workspace 约束、文档
+  selector、sources、partial 和安全失败行为。
+- `backend/tests/test_document_summary_service.py`：小文档摘要、顺序 Map + Reduce、进度、超限和
+  模型失败 partial。
 - `backend/tests/test_agent_loop.py`：ReAct parser、`ReactTextAgentExecutor`、parse error、
   unknown tool、invalid input、`max_steps`、clarification pause/resume 和 prompt builder。
 - `backend/tests/test_native_tool_calling.py`：DeepSeek native tool calling executor、tool_calls、

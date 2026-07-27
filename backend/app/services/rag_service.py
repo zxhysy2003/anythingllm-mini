@@ -1,6 +1,6 @@
 import logging
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.core.embeddings import SentenceTransformerEmbeddings, embedding_service
@@ -23,7 +23,7 @@ class RAGSource(BaseModel):
     original_filename: str
     chunk_index: int
     text: str
-    score: float
+    score: float | None = Field(default=None, ge=0, le=1)
 
 
 class RAGContextBuildResult(BaseModel):
