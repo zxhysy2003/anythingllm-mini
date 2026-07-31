@@ -30,7 +30,7 @@ from app.tools.document_tools import WORKSPACE_DOCUMENT_SUMMARY_TOOL_NAME
 from app.tools.interactions import ClarificationRequest, ToolInteraction
 from app.tools.registry import ToolRegistry, ToolResult
 
-AGENT_REPLAY_FIXTURE_SCHEMA_VERSION = 1
+AGENT_REPLAY_FIXTURE_SCHEMA_VERSION = 2
 REPLAY_CHECK_PASSED = "passed"
 REPLAY_CHECK_FAILED = "failed"
 REPLAY_CHECK_NOT_APPLICABLE = "not_applicable"
@@ -115,7 +115,7 @@ class AgentReplayStep(BaseModel):
 class AgentReplayFixture(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1] = AGENT_REPLAY_FIXTURE_SCHEMA_VERSION
+    schema_version: Literal[2] = AGENT_REPLAY_FIXTURE_SCHEMA_VERSION
     invocation: AgentReplayInvocation
     metrics: AgentReplayMetrics
     steps: list[AgentReplayStep]
@@ -134,7 +134,7 @@ class AgentReplayCheck(BaseModel):
 class AgentReplayReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1] = AGENT_REPLAY_FIXTURE_SCHEMA_VERSION
+    schema_version: Literal[2] = AGENT_REPLAY_FIXTURE_SCHEMA_VERSION
     agent_mode: ReplayAgentMode
     passed: bool
     checks: list[AgentReplayCheck]
@@ -421,7 +421,7 @@ class AgentReplayService:
             return source.model_copy(
                 update={
                     "document_id": aliases[source.document_id],
-                    "original_filename": anonymize_text(source.original_filename),
+                    "display_filename": anonymize_text(source.display_filename),
                     "text": anonymize_text(source.text),
                 }
             )

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "invocation": {
     "agent_mode": "react_text",
     "status": "completed",
@@ -27,17 +27,17 @@
         "action": "summarize",
         "document_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
-      "observation": "Summary of guide.txt:\nThe guide explains the minimal Agent loop.",
+      "observation": "Summary of document aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:\nThe guide explains the minimal Agent loop.",
       "ok": true,
       "error": null,
       "tool_result": {
         "ok": true,
-        "content": "Summary of guide.txt:\nThe guide explains the minimal Agent loop.",
+        "content": "Summary of document aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:\nThe guide explains the minimal Agent loop.",
         "artifacts": {
           "sources": [
             {
               "document_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-              "original_filename": "guide.txt",
+              "display_filename": "guide.txt",
               "chunk_index": 0,
               "text": "The guide explains the minimal Agent loop.",
               "score": null
@@ -46,7 +46,7 @@
           "outputs": {
             "action": "summarize",
             "document_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "original_filename": "guide.txt",
+            "display_filename": "guide.txt",
             "completion_status": "complete",
             "stop_reasons": [],
             "total_chunks": 1,
@@ -68,7 +68,7 @@
   "sources": [
     {
       "document_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "original_filename": "guide.txt",
+      "display_filename": "guide.txt",
       "chunk_index": 0,
       "text": "The guide explains the minimal Agent loop.",
       "score": null

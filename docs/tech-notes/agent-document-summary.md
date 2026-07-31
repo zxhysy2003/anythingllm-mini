@@ -26,23 +26,17 @@
 {"action": "summarize", "document_id": "<32位hex>"}
 ```
 
-```json
-{"action": "summarize", "filename": "guide.pdf"}
-```
-
-`list` 不接受 selector；`summarize` 要求 ID 或精确 filename 二选一。同一 workspace 内出现同名
-文档时，工具返回候选 ID，不自行挑选。filename 必须是安全 basename，LLM 不能提供 workspace ID
-或本地路径，也不能通过换行、制表符等控制字符把额外内容注入 Agent observation。运行时的
-Pydantic 校验与提供给 native tool calling 的 JSON Schema 都表达同一 action-selector 互斥关系。
-filename selector 与 `list` 返回的展示名使用同一规范化规则；不安全或超过 255 字符的原始名称会
-回退到上传时清洗过的 `stored_filename`，因此列表中的名称可以直接用于后续 summarize。
+`list` 不接受 selector；`summarize` 只接受 32 位小写十六进制 `document_id`。文件名只是
+`display_filename` 展示标签，可以重复，不能作为文档身份。运行时 Pydantic 校验与 native tool
+calling 的 JSON Schema 使用同一 contract，并拒绝额外的 `filename` 字段。
 
 工具读取当前 Agent request 的 runtime-only SQLModel session。这个 session 不进入 prompt、approval
 ID、persistence 或 replay fixture；文档查询始终附带 `workspace_id`。
 
 ## 安全读取
 
-文档上传成功时，解析文本保存在 `parsed_dir/<document_id>/...txt`。总结前重新检查：
+文档上传成功时，原文件保存在 `upload_dir/<document_id>/source.<ext>`，解析文本固定保存在
+`parsed_dir/<document_id>/content.txt`。两个路径完全由系统生成。总结前重新检查：
 
 1. document ID 是 32 位小写十六进制。
 2. resolved path 位于对应 document directory 内，且不是目录本身。
@@ -74,8 +68,8 @@ parsed text
 ```
 
 summary system prompt 把原文和 section summaries 都声明为不可信 reference data，要求忽略其中的
-命令、角色变化和 prompt-like text。上传文件名同样属于不可信元数据，因此不会进入 summary LLM
-prompt，只在模型调用结束后用于格式化 ToolResult。chunks 顺序处理，不并行请求 provider，因此
+命令、角色变化和 prompt-like text。展示文件名同样属于不可信元数据，不进入 summary LLM prompt
+或 summary ToolResult content；后者使用中性的 document ID。chunks 顺序处理，不并行请求 provider，因此
 进度和失败位置可确定复现。分块扫描仍会遍历全文以计算准确的 `total_chunks`，但内存中只保留前
 8 个待处理 sections，不会先物化整篇文档的全部 chunk 列表。
 
@@ -130,16 +124,17 @@ AgentService 汇总到 assistant message 和 invocation detail。
 
 artifact 的通用安全规则会拒绝看起来像裸本地路径的 output 字符串。若模型摘要本身以
 `/etc/...`、`file:` 等 path-like 文本开头，工具只在结构化 `chunk_summaries` 中增加
-`Summary text:` prose 标签，给下一轮 Agent 的最终 `content` 保持原摘要不变。若原始文件名会触发
-同一规则或包含控制字符，则搜索和总结的展示内容及 artifact 都使用上传时已经清洗过的
-`stored_filename`。
+`Summary text:` prose 标签，给下一轮 Agent 的最终 `content` 保持原摘要不变。
+`display_filename` 在上传边界完成 NFC、basename、控制字符、长度和扩展名校验，不参与路径构造。
+它只出现在 list、source 和 UI；Map/Reduce、RAG reference prompt 和 summary observation 使用
+document ID，不包含展示名。
 
 `chunk_summaries` 会按完整 JSON 序列化后的实际字符数检查 8000 字符总预算，包括引号、反斜杠和
 控制字符产生的转义开销。若各项分别合法但合并后超限，工具按统一字符上限确定性截断结构化的
 section summaries，加入 `summary_output_limit` 并返回显式 partial；不会让最终 artifact 校验异常
 退化成 `tool_execution_failed`。
 
-replay fixture 保存最终 ToolResult、chunk summaries、source snapshot 和 metrics，但不重放瞬时
+replay schema version 2 保存最终 ToolResult、chunk summaries、source snapshot 和 metrics，但不重放瞬时
 progress timeline，也不重新调用工具或 LLM。导出时会用仍满足 selector schema 的 32 位 hex
 别名统一替换 action input、LLM output、ToolResult、source snapshot 和最终消息中的文档 ID。
 

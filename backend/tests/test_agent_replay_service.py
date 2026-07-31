@@ -152,7 +152,7 @@ def test_replay_reports_parser_registry_source_and_metric_mismatches():
     step = fixture.steps[0]
     source = ToolSourceArtifact(
         document_id="document_1",
-        original_filename="guide.txt",
+        display_filename="guide.txt",
         chunk_index=0,
         text="Safe fixture source.",
         score=0.9,
@@ -318,7 +318,7 @@ def test_replay_rejects_invalid_clarification_choice_resolution():
 def test_export_anonymizes_document_ids_and_omits_persistence_metadata(session):
     source = ToolSourceArtifact(
         document_id="real-document-id",
-        original_filename="guide.txt",
+        display_filename="guide.txt",
         chunk_index=0,
         text="Workspace source text.",
         score=0.91,
@@ -411,7 +411,7 @@ def test_export_anonymizes_summary_document_ids_in_all_fixture_locations(session
     document_id = f"{1:032x}"
     source = ToolSourceArtifact(
         document_id=document_id,
-        original_filename="guide.txt",
+        display_filename="guide.txt",
         chunk_index=0,
         text=f"Workspace summary source text for {document_id}.",
         score=None,
@@ -519,7 +519,7 @@ def test_anonymization_updates_clarification_interaction_and_replays():
     )
     source = ToolSourceArtifact(
         document_id=document_id,
-        original_filename="guide.txt",
+        display_filename="guide.txt",
         chunk_index=0,
         text=f"Reporting instructions from {document_id}.",
         score=0.91,
@@ -592,7 +592,7 @@ def test_anonymization_updates_clarification_interaction_and_replays():
 def test_export_and_replay_support_pending_clarification(session):
     source = ToolSourceArtifact(
         document_id="pending-source-document-id",
-        original_filename="guide.txt",
+        display_filename="guide.txt",
         chunk_index=0,
         text="The workspace guide says annual reports use the standard format.",
         score=0.91,
@@ -711,13 +711,13 @@ def test_fixture_files_are_strict_and_not_overwritten(tmp_path):
         service.load_fixture(output_path)
 
     payload.pop("unexpected")
-    payload["schema_version"] = 2
+    payload["schema_version"] = 1
     output_path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(AgentReplayFixtureError, match="invalid replay fixture"):
         service.load_fixture(output_path)
 
-    payload["schema_version"] = 1
+    payload["schema_version"] = 2
     payload["steps"][0].update(
         {
             "llm_output": "Final Answer: invalid persisted step",

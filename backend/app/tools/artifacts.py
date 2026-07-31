@@ -3,7 +3,8 @@ import re
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
-from app.core.safe_strings import looks_like_local_path, validate_safe_basename
+from app.core.document_filename import validate_display_filename
+from app.core.safe_strings import looks_like_local_path
 
 MAX_TOOL_OUTPUT_COUNT = 20
 MAX_TOOL_OUTPUT_JSON_CHARS = 8_000
@@ -24,15 +25,15 @@ class ToolSourceArtifact(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     document_id: str = Field(min_length=1, max_length=255)
-    original_filename: str = Field(min_length=1, max_length=255)
+    display_filename: str = Field(min_length=1, max_length=255)
     chunk_index: int = Field(ge=0)
     text: str = Field(min_length=1)
     score: float | None = Field(default=None, ge=0, le=1)
 
-    @field_validator("original_filename")
+    @field_validator("display_filename")
     @classmethod
-    def validate_original_filename(cls, value: str) -> str:
-        return validate_safe_basename(value, field_name="original_filename")
+    def validate_source_display_filename(cls, value: str) -> str:
+        return validate_display_filename(value)
 
 
 class ToolArtifacts(BaseModel):

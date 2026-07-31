@@ -104,8 +104,7 @@ class WorkspaceDocumentRead(BaseModel):
 
     id: str
     workspace_id: str
-    original_filename: str
-    stored_filename: str
+    display_filename: str
     content_type: str | None
     extension: str
     size_bytes: int
@@ -117,7 +116,7 @@ class WorkspaceDocumentRead(BaseModel):
 class WorkspaceDocumentDeleteResponse(BaseModel):
     id: str
     workspace_id: str
-    original_filename: str
+    display_filename: str
     deleted_chunks: int
     upload_file_deleted: bool
     parsed_file_deleted: bool

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "invocation": {
     "agent_mode": "native_tool_calling",
     "status": "completed",
@@ -21,30 +21,30 @@
   "steps": [
     {
       "step_index": 1,
-      "llm_output": "{\"function\":{\"arguments\":\"{\\\"action\\\":\\\"summarize\\\",\\\"filename\\\":\\\"guide.txt\\\"}\",\"name\":\"workspace_document_summary\"},\"id\":\"summary-call\",\"type\":\"function\"}",
+      "llm_output": "{\"function\":{\"arguments\":\"{\\\"action\\\":\\\"summarize\\\",\\\"document_id\\\":\\\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\\\"}\",\"name\":\"workspace_document_summary\"},\"id\":\"summary-call\",\"type\":\"function\"}",
       "action": "workspace_document_summary",
       "action_input": {
         "action": "summarize",
-        "filename": "guide.txt"
+        "document_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       },
-      "observation": "Partial summary of guide.txt (covers only the first 2 of 3 sections; reasons: max_chunks):\nCombined first two sections.",
+      "observation": "Partial summary of document bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (covers only the first 2 of 3 sections; reasons: max_chunks):\nCombined first two sections.",
       "ok": true,
       "error": null,
       "tool_result": {
         "ok": true,
-        "content": "Partial summary of guide.txt (covers only the first 2 of 3 sections; reasons: max_chunks):\nCombined first two sections.",
+        "content": "Partial summary of document bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (covers only the first 2 of 3 sections; reasons: max_chunks):\nCombined first two sections.",
         "artifacts": {
           "sources": [
             {
               "document_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-              "original_filename": "guide.txt",
+              "display_filename": "guide.txt",
               "chunk_index": 0,
               "text": "First section source.",
               "score": null
             },
             {
               "document_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-              "original_filename": "guide.txt",
+              "display_filename": "guide.txt",
               "chunk_index": 1,
               "text": "Second section source.",
               "score": null
@@ -53,7 +53,7 @@
           "outputs": {
             "action": "summarize",
             "document_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            "original_filename": "guide.txt",
+            "display_filename": "guide.txt",
             "completion_status": "partial",
             "stop_reasons": ["max_chunks"],
             "total_chunks": 3,
@@ -73,14 +73,14 @@
   "sources": [
     {
       "document_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "original_filename": "guide.txt",
+      "display_filename": "guide.txt",
       "chunk_index": 0,
       "text": "First section source.",
       "score": null
     },
     {
       "document_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "original_filename": "guide.txt",
+      "display_filename": "guide.txt",
       "chunk_index": 1,
       "text": "Second section source.",
       "score": null

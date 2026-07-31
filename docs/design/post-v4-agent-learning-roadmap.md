@@ -221,8 +221,8 @@ selector 或工具数量 metrics。
 
 ### 5. 长文档总结工具
 
-状态：已实现第一版。`workspace_document_summary` 支持列出当前 workspace 文档、按 ID 或精确
-filename 读取安全的 parsed text、小文档单次摘要和长文档有界 Map + Reduce。
+状态：已实现并完成文件名信任边界重构。`workspace_document_summary` 支持列出当前 workspace
+文档、只按稳定 `document_id` 读取安全 parsed text、小文档单次摘要和长文档有界 Map + Reduce。
 
 能力线：Document lifecycle、RAG quality、Agent capabilities。
 
@@ -237,8 +237,8 @@ filename 读取安全的 parsed text、小文档单次摘要和长文档有界 M
 已实现边界：
 
 - 只允许总结当前 workspace 内已有数据库记录且 parsed text 校验成功的单个文档。
-- 一个低风险、只读工具支持 `list` / `summarize`；总结使用 `document_id` 或精确 filename，
-  同名文档要求改用 ID。
+- 一个低风险、只读工具支持 `list` / `summarize`；展示名只用于 list/source/UI，总结只使用
+  `document_id`，相同展示名不会产生 selector 歧义。
 - 默认按 4000 字符、无 overlap 分块，最多处理前 8 个 chunk；长文档顺序执行 Map + Reduce。
 - 超限、部分模型失败或 reduce 失败会返回带覆盖范围和 `stop_reasons` 的可用 partial；没有任何
   可用 chunk summary 时才返回失败；executor 会把 partial 覆盖声明保留到最终 Agent answer。

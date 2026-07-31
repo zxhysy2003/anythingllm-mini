@@ -265,15 +265,14 @@ def test_document_summary_openai_schema_encodes_action_selector_contract():
     assert [variant["required"] for variant in schema["oneOf"]] == [
         ["action"],
         ["action", "document_id"],
-        ["action", "filename"],
     ]
     assert [
         variant["properties"]["action"]["const"] for variant in schema["oneOf"]
     ] == [
         "list",
         "summarize",
-        "summarize",
     ]
     assert schema["oneOf"][1]["properties"]["document_id"]["type"] == "string"
-    assert schema["oneOf"][2]["properties"]["filename"]["type"] == "string"
-    assert "exactly one" in summary_tool["function"]["description"]
+    assert "filename" not in schema["properties"]
+    assert schema["additionalProperties"] is False
+    assert "exact document_id" in summary_tool["function"]["description"]

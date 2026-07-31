@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "invocation": {
     "agent_mode": "react_text",
     "status": "completed",
@@ -21,23 +21,23 @@
   "steps": [
     {
       "step_index": 1,
-      "llm_output": "Action: workspace_document_summary\nAction Input: {\"action\": \"summarize\", \"filename\": \"guide.txt\"}",
+      "llm_output": "Action: workspace_document_summary\nAction Input: {\"action\": \"summarize\", \"document_id\": \"cccccccccccccccccccccccccccccccc\"}",
       "action": "workspace_document_summary",
       "action_input": {
         "action": "summarize",
-        "filename": "guide.txt"
+        "document_id": "cccccccccccccccccccccccccccccccc"
       },
-      "observation": "Partial summary of guide.txt (covers only the first 1 of 3 sections; reasons: model_error):\nSection 1:\nFirst section points.",
+      "observation": "Partial summary of document cccccccccccccccccccccccccccccccc (covers only the first 1 of 3 sections; reasons: model_error):\nSection 1:\nFirst section points.",
       "ok": true,
       "error": null,
       "tool_result": {
         "ok": true,
-        "content": "Partial summary of guide.txt (covers only the first 1 of 3 sections; reasons: model_error):\nSection 1:\nFirst section points.",
+        "content": "Partial summary of document cccccccccccccccccccccccccccccccc (covers only the first 1 of 3 sections; reasons: model_error):\nSection 1:\nFirst section points.",
         "artifacts": {
           "sources": [
             {
               "document_id": "cccccccccccccccccccccccccccccccc",
-              "original_filename": "guide.txt",
+              "display_filename": "guide.txt",
               "chunk_index": 0,
               "text": "First section source.",
               "score": null
@@ -46,7 +46,7 @@
           "outputs": {
             "action": "summarize",
             "document_id": "cccccccccccccccccccccccccccccccc",
-            "original_filename": "guide.txt",
+            "display_filename": "guide.txt",
             "completion_status": "partial",
             "stop_reasons": ["model_error"],
             "total_chunks": 3,
@@ -65,7 +65,7 @@
   "sources": [
     {
       "document_id": "cccccccccccccccccccccccccccccccc",
-      "original_filename": "guide.txt",
+      "display_filename": "guide.txt",
       "chunk_index": 0,
       "text": "First section source.",
       "score": null

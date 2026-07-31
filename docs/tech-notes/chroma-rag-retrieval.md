@@ -96,8 +96,7 @@ chunk ID 是确定性的：
 
 - `document_id`
 - `workspace_id`
-- `original_filename`
-- `stored_filename`
+- `display_filename`
 - `extension`
 - `chunk_index`
 - `character_count`

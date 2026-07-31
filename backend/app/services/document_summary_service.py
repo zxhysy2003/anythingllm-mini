@@ -61,7 +61,7 @@ class DocumentSummaryResult(BaseModel):
 
 def format_document_summary_content(
     *,
-    filename: str,
+    document_id: str,
     summary: str,
     processed_chunks: int,
     total_chunks: int,
@@ -69,12 +69,12 @@ def format_document_summary_content(
 ) -> str:
     if stop_reasons:
         prefix = (
-            f"Partial summary of {filename} (covers only the first "
+            f"Partial summary of document {document_id} (covers only the first "
             f"{processed_chunks} of {total_chunks} sections; reasons: "
             f"{', '.join(stop_reasons)}):"
         )
     else:
-        prefix = f"Summary of {filename}:"
+        prefix = f"Summary of document {document_id}:"
     return f"{prefix}\n{summary}"
 
 
@@ -101,7 +101,7 @@ class DocumentSummaryService:
         self,
         *,
         content: str,
-        filename: str,
+        document_id: str,
         progress_reporter: ToolProgressReporter | None = None,
     ) -> DocumentSummaryResult:
         chunks, total_chunks = self._select_chunks(content)
@@ -129,7 +129,7 @@ class DocumentSummaryService:
                 message="Summarized section 1 of 1.",
             )
             return self._result(
-                filename=filename,
+                document_id=document_id,
                 final_summary=summary,
                 total_chunks=1,
                 chunks=[
@@ -207,7 +207,7 @@ class DocumentSummaryService:
             self._append_reason(stop_reasons, "summary_output_limit")
 
         return self._result(
-            filename=filename,
+            document_id=document_id,
             final_summary=final_summary,
             total_chunks=total_chunks,
             chunks=summarized_chunks,
@@ -358,7 +358,7 @@ class DocumentSummaryService:
     def _result(
         self,
         *,
-        filename: str,
+        document_id: str,
         final_summary: str,
         total_chunks: int,
         chunks: list[DocumentSummaryChunk],
@@ -369,7 +369,7 @@ class DocumentSummaryService:
         completion_status = "partial" if stop_reasons else "complete"
         return DocumentSummaryResult(
             content=format_document_summary_content(
-                filename=filename,
+                document_id=document_id,
                 summary=final_summary,
                 processed_chunks=processed_chunks,
                 total_chunks=total_chunks,

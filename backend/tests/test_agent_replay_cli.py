@@ -31,7 +31,7 @@ def test_export_cli_accepts_explicit_output_and_reports_success(
     assert events == [("invocation-id", output_path, False)]
     assert json.loads(capsys.readouterr().out) == {
         "output": str(output_path),
-        "schema_version": 1,
+        "schema_version": 2,
     }
 
 

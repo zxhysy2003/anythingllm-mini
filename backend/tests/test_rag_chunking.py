@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 
 from app.core.rag import TextChunker
@@ -11,12 +9,10 @@ WORKSPACE_ID = "1" * 32
 def parsed_document(text: str) -> ParsedDocumentFile:
     return ParsedDocumentFile(
         id="a" * 32,
-        original_filename="guide.txt",
-        stored_filename="guide.txt",
+        display_filename="guide.txt",
         extension=".txt",
         text=text,
         character_count=len(text),
-        parsed_path=str(Path("storage/parsed") / ("a" * 32) / "guide.txt"),
     )
 
 
@@ -51,7 +47,7 @@ def test_chunker_builds_deterministic_chunk_metadata():
     assert [chunk.id for chunk in chunks] == [f"{document.id}:0", f"{document.id}:1"]
     assert chunks[0].document_id == document.id
     assert chunks[0].workspace_id == WORKSPACE_ID
-    assert chunks[0].original_filename == "guide.txt"
+    assert chunks[0].display_filename == "guide.txt"
     assert chunks[0].chunk_index == 0
     assert chunks[0].character_count == len(chunks[0].text)
 

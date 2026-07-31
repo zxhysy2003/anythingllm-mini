@@ -303,7 +303,7 @@ AgentService
 - Workspace Chat：系统固定先检索，再决定是否调用 LLM。
 - Workspace Agent：模型可以先回答，也可以主动调用文档搜索工具，再根据 observation 回答。
 
-`workspace_document_summary` 与搜索工具职责不同：它按 workspace 和文档 selector 读取完整 parsed
+`workspace_document_summary` 与搜索工具职责不同：它按 workspace 和 `document_id` 读取完整 parsed
 text，小文档单次摘要，长文档按无 overlap sections 顺序执行有界 Map + Reduce。每个已处理 section
 通过 `score=null` 的 direct source citation 保留；实时 `tool_progress` 只报告 phase 和 N/M，一次
 总结调用仍只持久化为一个 Agent step。上传文件名不进入内部 summary LLM prompt；超限或已有部分

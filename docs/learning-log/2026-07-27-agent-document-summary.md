@@ -265,8 +265,9 @@ executor/API 测试覆盖。
 
 ## 8. 后续 TODO
 
-- [ ] 从头梳理 `original_filename`、`stored_filename`、`display_filename` 和 LLM-facing metadata。
-- [ ] 解决 ToolResult observation 中的文件名仍可进入外层 Agent prompt 的问题。
+- [x] 从头梳理文件名信任边界；结果见
+  `docs/design/document-filename-trust-boundaries.md`。
+- [x] summary/search ToolResult observation 改用 document ID，展示名仅在 list/source/UI 出现。
 - [ ] partial disclosure 按 `document_id` 使用最后一次总结结果，覆盖失败后成功重试。
-- [ ] 为文件名信任边界建立一张上下文矩阵和集中测试，而不是继续局部打补丁。
-- [ ] 重构前保持当前 commit 作为可运行、可回退的功能快照。
+- [x] 为文件名信任边界建立上下文矩阵和集中测试。
+- [x] 重构前的长文档总结功能已保留为 commit `9c64790`。

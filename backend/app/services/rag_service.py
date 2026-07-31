@@ -20,7 +20,7 @@ class IndexedDocument(BaseModel):
 
 class RAGSource(BaseModel):
     document_id: str
-    original_filename: str
+    display_filename: str
     chunk_index: int
     text: str
     score: float | None = Field(default=None, ge=0, le=1)
@@ -59,9 +59,7 @@ class RAGService:
             )
             chunk_count = await self.store.upsert_chunks(chunks, embeddings)
         except Exception as exc:
-            raise RAGIndexError(
-                f"failed to index document: {parsed_file.original_filename}"
-            ) from exc
+            raise RAGIndexError(f"failed to index document: {parsed_file.id}") from exc
 
         return IndexedDocument(
             document_id=parsed_file.id,
@@ -205,7 +203,7 @@ class RAGService:
     def _source_context_block(self, index: int, chunk: RetrievedChunk) -> str:
         return (
             f"[SOURCE {index}]\n"
-            f"Document: {chunk.original_filename}\n"
+            f"Document ID: {chunk.document_id}\n"
             f"Chunk: {chunk.chunk_index}\n"
             f"{chunk.text}\n"
             f"[END SOURCE {index}]"
@@ -214,7 +212,7 @@ class RAGService:
     def to_source(self, chunk: RetrievedChunk) -> RAGSource:
         return RAGSource(
             document_id=chunk.document_id,
-            original_filename=chunk.original_filename,
+            display_filename=chunk.display_filename,
             chunk_index=chunk.chunk_index,
             text=chunk.text,
             score=chunk.score,

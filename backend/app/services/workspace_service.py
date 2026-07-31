@@ -20,8 +20,8 @@ from app.models.document import WorkspaceDocument
 from app.models.workspace import Workspace, utc_now
 from app.services.chat_service import ChatService, chat_service
 from app.services.document_service import (
-    DocumentFileDeletionPlan,
     DocumentService,
+    DocumentStoragePaths,
     document_service,
 )
 from app.services.exceptions import (
@@ -579,14 +579,13 @@ class WorkspaceService:
     async def _build_workspace_deletion_plans(
         self,
         documents: list[WorkspaceDocument],
-    ) -> list[DocumentFileDeletionPlan]:
+    ) -> list[DocumentStoragePaths]:
         deletion_plans = []
         for document in documents:
             deletion_plans.append(
                 await self.documents.build_document_file_deletion_plan(
                     document.id,
-                    document.upload_path,
-                    document.parsed_path,
+                    document.extension,
                 )
             )
         return deletion_plans

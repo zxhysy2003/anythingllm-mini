@@ -158,7 +158,7 @@ def test_tool_source_artifact_rejects_unsafe_filenames(filename):
     with pytest.raises(ValidationError):
         ToolSourceArtifact(
             document_id="document-1",
-            original_filename=filename,
+            display_filename=filename,
             chunk_index=0,
             text="safe source text",
             score=0.9,
@@ -169,7 +169,7 @@ def test_tool_source_artifact_rejects_internal_path_fields():
     with pytest.raises(ValidationError):
         ToolSourceArtifact(
             document_id="document-1",
-            original_filename="guide.txt",
+            display_filename="guide.txt",
             chunk_index=0,
             text="safe source text",
             score=0.9,
@@ -180,7 +180,7 @@ def test_tool_source_artifact_rejects_internal_path_fields():
 def test_tool_source_artifact_accepts_direct_document_source_without_score():
     source = ToolSourceArtifact(
         document_id="document-1",
-        original_filename="guide.txt",
+        display_filename="guide.txt",
         chunk_index=0,
         text="Direct document section.",
         score=None,

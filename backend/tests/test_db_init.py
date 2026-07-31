@@ -37,7 +37,7 @@ def test_create_db_and_tables_runs_alembic_upgrade_for_new_database(tmp_path):
     }
     with engine.connect() as connection:
         version = connection.execute(text("select version_num from alembic_version"))
-    assert version.scalar_one() == "0005_add_agent_invocation_claims"
+    assert version.scalar_one() == "0006_filename_boundaries"
     invocation_columns = {
         column["name"]: column for column in inspector.get_columns("agent_invocations")
     }
@@ -50,6 +50,74 @@ def test_create_db_and_tables_runs_alembic_upgrade_for_new_database(tmp_path):
     }
     assert "agent_execution_claim_id" in conversation_columns
     assert "agent_execution_claimed_at" in conversation_columns
+    document_columns = {
+        column["name"] for column in inspector.get_columns("workspace_documents")
+    }
+    assert "display_filename" in document_columns
+    assert {
+        "original_filename",
+        "stored_filename",
+        "upload_path",
+        "parsed_path",
+    }.isdisjoint(document_columns)
+
+
+def test_filename_boundary_migration_rejects_nonempty_document_table(tmp_path):
+    database_url = sqlite_url(tmp_path / "documents-v5.db")
+    config = alembic_config(database_url)
+    command.upgrade(config, "0005_add_agent_invocation_claims")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(text("""
+            INSERT INTO workspaces (
+                id, name, system_prompt, temperature, history_limit, chat_mode,
+                top_k, similarity_threshold, created_at, updated_at
+            ) VALUES (
+                'workspace-1', 'Study', 'system', 0.7, 20, 'chat', 4, 0.3,
+                '2026-07-27 00:00:00', '2026-07-27 00:00:00'
+            )
+        """))
+        connection.execute(text("""
+            INSERT INTO workspace_documents (
+                id, workspace_id, original_filename, stored_filename,
+                content_type, extension, size_bytes, character_count,
+                upload_path, parsed_path, chunk_count, created_at
+            ) VALUES (
+                'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'workspace-1', 'guide.txt',
+                'guide.txt', 'text/plain', '.txt', 5, 5,
+                '/legacy/upload', '/legacy/parsed', 1,
+                '2026-07-27 00:00:00'
+            )
+        """))
+
+    with pytest.raises(RuntimeError, match="breaking upgrade"):
+        command.upgrade(config, "head")
+
+    columns = {
+        column["name"] for column in inspect(engine).get_columns("workspace_documents")
+    }
+    assert "original_filename" in columns
+    assert "display_filename" not in columns
+
+
+def test_filename_boundary_migration_downgrades_only_empty_document_table(tmp_path):
+    database_url = sqlite_url(tmp_path / "empty-documents.db")
+    config = alembic_config(database_url)
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+
+    command.downgrade(config, "0005_add_agent_invocation_claims")
+
+    columns = {
+        column["name"] for column in inspect(engine).get_columns("workspace_documents")
+    }
+    assert "display_filename" not in columns
+    assert {
+        "original_filename",
+        "stored_filename",
+        "upload_path",
+        "parsed_path",
+    } <= columns
 
 
 def test_upgrade_from_0003_preserves_completed_agent_invocations(tmp_path):

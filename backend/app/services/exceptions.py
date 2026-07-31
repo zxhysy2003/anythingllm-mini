@@ -30,14 +30,5 @@ class WorkspaceDocumentNotFoundError(LookupError):
     """Raised when a document does not belong to the workspace."""
 
 
-class WorkspaceDocumentAmbiguousError(LookupError):
-    """Raised when an exact filename selects multiple workspace documents."""
-
-    def __init__(self, filename: str, document_ids: list[str]) -> None:
-        super().__init__(f"multiple workspace documents match filename: {filename}")
-        self.filename = filename
-        self.document_ids = document_ids
-
-
 class WorkspacePersistenceError(RuntimeError):
     """Raised when workspace metadata or messages cannot be persisted."""

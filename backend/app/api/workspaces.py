@@ -178,7 +178,7 @@ async def upload_workspace_document(
     summary="List workspace documents",
     description=(
         "List documents registered in one workspace. Responses expose document "
-        "metadata but not local upload_path or parsed_path values."
+        "metadata but never expose local storage paths."
     ),
 )
 def list_workspace_documents(

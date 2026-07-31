@@ -6,12 +6,11 @@ from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
-from app.core.safe_strings import select_safe_basename
+from app.core.document_filename import validate_document_id
 from app.models.document import WorkspaceDocument
 from app.models.workspace import Workspace
 from app.services.document_service import DocumentService, document_service
 from app.services.exceptions import (
-    WorkspaceDocumentAmbiguousError,
     WorkspaceDocumentNotFoundError,
     WorkspaceNotFoundError,
     WorkspacePersistenceError,
@@ -21,23 +20,11 @@ from app.services.rag_service import RAGService, rag_service
 logger = logging.getLogger(__name__)
 
 
-def document_display_filename(
-    original_filename: str,
-    stored_filename: str,
-) -> str:
-    return select_safe_basename(
-        (original_filename, stored_filename),
-        field_name="original_filename",
-    )
-
-
 class WorkspaceDocumentDeleteResult(BaseModel):
     id: str
     workspace_id: str
-    original_filename: str
+    display_filename: str
     deleted_chunks: int
-    upload_path: str
-    parsed_path: str
     upload_file_deleted: bool
     parsed_file_deleted: bool
 
@@ -69,46 +56,15 @@ class WorkspaceDocumentService:
         session: Session,
         workspace_id: str,
         *,
-        document_id: str | None = None,
-        filename: str | None = None,
+        document_id: str,
     ) -> WorkspaceDocument:
         self._get_workspace(session, workspace_id)
-        if (document_id is None) == (filename is None):
-            raise ValueError("exactly one document selector is required")
-        if document_id is not None:
-            return self._get_workspace_document(session, workspace_id, document_id)
-
-        candidates = list(
-            session.exec(
-                select(WorkspaceDocument).where(
-                    WorkspaceDocument.workspace_id == workspace_id,
-                )
-            ).all()
-        )
-        documents = [
-            document
-            for document in candidates
-            if document_display_filename(
-                document.original_filename,
-                document.stored_filename,
-            )
-            == filename
-        ]
-        if not documents:
-            raise WorkspaceDocumentNotFoundError(
-                f"document not found in workspace: {filename}"
-            )
-        if len(documents) > 1:
-            raise WorkspaceDocumentAmbiguousError(
-                filename or "",
-                sorted(document.id for document in documents),
-            )
-        return documents[0]
+        validate_document_id(document_id)
+        return self._get_workspace_document(session, workspace_id, document_id)
 
     async def read_document_text(self, document: WorkspaceDocument) -> str:
         return await self.documents.read_parsed_text(
             document.id,
-            document.parsed_path,
             expected_character_count=document.character_count,
         )
 
@@ -129,14 +85,11 @@ class WorkspaceDocumentService:
         document = WorkspaceDocument(
             id=saved_file.id,
             workspace_id=workspace_id,
-            original_filename=saved_file.original_filename,
-            stored_filename=saved_file.stored_filename,
+            display_filename=saved_file.display_filename,
             content_type=saved_file.content_type,
             extension=saved_file.extension,
             size_bytes=saved_file.size_bytes,
             character_count=parsed_file.character_count,
-            upload_path=saved_file.upload_path,
-            parsed_path=parsed_file.parsed_path,
             chunk_count=indexed.chunk_count,
         )
         session.add(document)
@@ -178,8 +131,7 @@ class WorkspaceDocumentService:
         try:
             deletion_plan = await self.documents.build_document_file_deletion_plan(
                 document.id,
-                document.upload_path,
-                document.parsed_path,
+                document.extension,
             )
         except Exception as exc:
             raise WorkspacePersistenceError(
@@ -200,10 +152,8 @@ class WorkspaceDocumentService:
         result = WorkspaceDocumentDeleteResult(
             id=document.id,
             workspace_id=document.workspace_id,
-            original_filename=document.original_filename,
+            display_filename=document.display_filename,
             deleted_chunks=deleted_chunks,
-            upload_path=deleted_files.upload_path,
-            parsed_path=deleted_files.parsed_path,
             upload_file_deleted=deleted_files.upload_file_deleted,
             parsed_file_deleted=deleted_files.parsed_file_deleted,
         )

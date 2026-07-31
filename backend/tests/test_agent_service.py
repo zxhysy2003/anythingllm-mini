@@ -164,7 +164,7 @@ class DirectSummaryTool:
         assert context.session is not None
         source = ToolSourceArtifact(
             document_id=input_data.document_id,
-            original_filename="guide.txt",
+            display_filename="guide.txt",
             chunk_index=0,
             text="Direct document section.",
             score=None,
@@ -199,8 +199,7 @@ def make_chunk(
         id=f"{'a' * 32}:{chunk_index}",
         document_id="a" * 32,
         workspace_id=workspace_id,
-        original_filename="guide.txt",
-        stored_filename="guide.txt",
+        display_filename="guide.txt",
         extension=".txt",
         chunk_index=chunk_index,
         text=text,
@@ -1172,7 +1171,7 @@ def test_agent_service_collects_workspace_document_search_sources(session):
     assert rag.retrieve_calls == [("where is the answer?", workspace.id, None, None)]
     assert len(result.sources) == 1
     assert result.sources[0].document_id == "a" * 32
-    assert result.sources[0].original_filename == "guide.txt"
+    assert result.sources[0].display_filename == "guide.txt"
     assert "upload_path" not in result.sources[0].model_dump()
     assert "parsed_path" not in result.sources[0].model_dump()
     assert result.metrics.source_count == 1
