@@ -257,7 +257,7 @@ Agent 可能来自 UI，也可能来自 API 测试或脚本调用。只有后端
 
 **复习版理解：**
 
-这次实现把“工具是否能被执行”从“LLM 想调用什么”里拆了出来。LLM 可以产生一个高风险工具调用，但 registry 会先检查风险元数据、agent mode 和 approval id。没有批准时，工具不会执行，只会生成一个 failed Agent step，并在 `tool_result.data.approval_id` 中给出可确认的 id。
+这次实现把“工具是否能被执行”从“LLM 想调用什么”里拆了出来。LLM 可以产生一个高风险工具调用，但 registry 会先检查风险元数据、agent mode 和 approval id。没有批准时，工具不会执行，只会生成一个 failed Agent step，并在 `tool_result.error_details.approval_id` 中给出可确认的 id；approval id 属于失败诊断信息，不属于工具 artifact。
 
 **后续可继续做：**
 

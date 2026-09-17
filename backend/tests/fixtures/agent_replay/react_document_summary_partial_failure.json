@@ -1,0 +1,74 @@
+{
+  "schema_version": 2,
+  "invocation": {
+    "agent_mode": "react_text",
+    "status": "completed",
+    "provider": "fake",
+    "model": "fake-agent-model",
+    "input_message": "Summarize guide.txt.",
+    "answer": "Only the first section could be summarized."
+  },
+  "metrics": {
+    "max_steps": 5,
+    "llm_call_count": 2,
+    "step_count": 1,
+    "tool_call_count": 1,
+    "failed_step_count": 0,
+    "source_count": 1,
+    "max_steps_reached": false,
+    "total_latency_ms": 30
+  },
+  "steps": [
+    {
+      "step_index": 1,
+      "llm_output": "Action: workspace_document_summary\nAction Input: {\"action\": \"summarize\", \"document_id\": \"cccccccccccccccccccccccccccccccc\"}",
+      "action": "workspace_document_summary",
+      "action_input": {
+        "action": "summarize",
+        "document_id": "cccccccccccccccccccccccccccccccc"
+      },
+      "observation": "Partial summary of document cccccccccccccccccccccccccccccccc (covers only the first 1 of 3 sections; reasons: model_error):\nSection 1:\nFirst section points.",
+      "ok": true,
+      "error": null,
+      "tool_result": {
+        "ok": true,
+        "content": "Partial summary of document cccccccccccccccccccccccccccccccc (covers only the first 1 of 3 sections; reasons: model_error):\nSection 1:\nFirst section points.",
+        "artifacts": {
+          "sources": [
+            {
+              "document_id": "cccccccccccccccccccccccccccccccc",
+              "display_filename": "guide.txt",
+              "chunk_index": 0,
+              "text": "First section source.",
+              "score": null
+            }
+          ],
+          "outputs": {
+            "action": "summarize",
+            "document_id": "cccccccccccccccccccccccccccccccc",
+            "display_filename": "guide.txt",
+            "completion_status": "partial",
+            "stop_reasons": ["model_error"],
+            "total_chunks": 3,
+            "processed_chunks": 1,
+            "summary_llm_call_count": 2,
+            "chunk_summaries": [
+              {"chunk_index": 0, "summary": "First section points."}
+            ]
+          }
+        },
+        "error": null,
+        "error_details": {}
+      }
+    }
+  ],
+  "sources": [
+    {
+      "document_id": "cccccccccccccccccccccccccccccccc",
+      "display_filename": "guide.txt",
+      "chunk_index": 0,
+      "text": "First section source.",
+      "score": null
+    }
+  ]
+}

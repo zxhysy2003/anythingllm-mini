@@ -1,0 +1,47 @@
+{
+  "schema_version": 2,
+  "invocation": {
+    "agent_mode": "react_text",
+    "status": "completed",
+    "provider": "fake",
+    "model": "fake-agent-model",
+    "input_message": "calculate 1 + 2 * 3",
+    "answer": "the result is 7"
+  },
+  "metrics": {
+    "max_steps": 5,
+    "llm_call_count": 2,
+    "step_count": 1,
+    "tool_call_count": 1,
+    "failed_step_count": 0,
+    "source_count": 0,
+    "max_steps_reached": false,
+    "total_latency_ms": 12
+  },
+  "steps": [
+    {
+      "step_index": 1,
+      "llm_output": "Action: calculator\nAction Input: {\"expression\": \"1 + 2 * 3\"}",
+      "action": "calculator",
+      "action_input": {
+        "expression": "1 + 2 * 3"
+      },
+      "observation": "7",
+      "ok": true,
+      "error": null,
+      "tool_result": {
+        "ok": true,
+        "content": "7",
+        "artifacts": {
+          "sources": [],
+          "outputs": {
+            "result": 7
+          }
+        },
+        "error": null,
+        "error_details": {}
+      }
+    }
+  ],
+  "sources": []
+}

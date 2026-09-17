@@ -14,13 +14,10 @@ class WorkspaceDocument(SQLModel, table=True):
         ondelete="CASCADE",
         index=True,
     )
-    original_filename: str
-    stored_filename: str
+    display_filename: str = Field(max_length=255)
     content_type: str | None = None
     extension: str = Field(max_length=16)
     size_bytes: int
     character_count: int
-    upload_path: str
-    parsed_path: str
     chunk_count: int
     created_at: datetime = Field(default_factory=utc_now)

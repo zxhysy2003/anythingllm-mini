@@ -1,0 +1,77 @@
+{
+  "schema_version": 2,
+  "invocation": {
+    "agent_mode": "react_text",
+    "status": "completed",
+    "provider": "fake",
+    "model": "fake-agent-model",
+    "input_message": "Summarize guide.txt.",
+    "answer": "The guide explains the minimal Agent loop."
+  },
+  "metrics": {
+    "max_steps": 5,
+    "llm_call_count": 2,
+    "step_count": 1,
+    "tool_call_count": 1,
+    "failed_step_count": 0,
+    "source_count": 1,
+    "max_steps_reached": false,
+    "total_latency_ms": 21
+  },
+  "steps": [
+    {
+      "step_index": 1,
+      "llm_output": "Action: workspace_document_summary\nAction Input: {\"action\": \"summarize\", \"document_id\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "action": "workspace_document_summary",
+      "action_input": {
+        "action": "summarize",
+        "document_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "observation": "Summary of document aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:\nThe guide explains the minimal Agent loop.",
+      "ok": true,
+      "error": null,
+      "tool_result": {
+        "ok": true,
+        "content": "Summary of document aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:\nThe guide explains the minimal Agent loop.",
+        "artifacts": {
+          "sources": [
+            {
+              "document_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "display_filename": "guide.txt",
+              "chunk_index": 0,
+              "text": "The guide explains the minimal Agent loop.",
+              "score": null
+            }
+          ],
+          "outputs": {
+            "action": "summarize",
+            "document_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "display_filename": "guide.txt",
+            "completion_status": "complete",
+            "stop_reasons": [],
+            "total_chunks": 1,
+            "processed_chunks": 1,
+            "summary_llm_call_count": 1,
+            "chunk_summaries": [
+              {
+                "chunk_index": 0,
+                "summary": "The guide explains the minimal Agent loop."
+              }
+            ]
+          }
+        },
+        "error": null,
+        "error_details": {}
+      }
+    }
+  ],
+  "sources": [
+    {
+      "document_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "display_filename": "guide.txt",
+      "chunk_index": 0,
+      "text": "The guide explains the minimal Agent loop.",
+      "score": null
+    }
+  ]
+}

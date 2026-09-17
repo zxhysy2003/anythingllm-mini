@@ -1,0 +1,89 @@
+{
+  "schema_version": 2,
+  "invocation": {
+    "agent_mode": "native_tool_calling",
+    "status": "completed",
+    "provider": "fake",
+    "model": "fake-native-model",
+    "input_message": "Summarize the long guide.",
+    "answer": "This is a partial summary covering the first two sections."
+  },
+  "metrics": {
+    "max_steps": 5,
+    "llm_call_count": 2,
+    "step_count": 1,
+    "tool_call_count": 1,
+    "failed_step_count": 0,
+    "source_count": 2,
+    "max_steps_reached": false,
+    "total_latency_ms": 35
+  },
+  "steps": [
+    {
+      "step_index": 1,
+      "llm_output": "{\"function\":{\"arguments\":\"{\\\"action\\\":\\\"summarize\\\",\\\"document_id\\\":\\\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\\\"}\",\"name\":\"workspace_document_summary\"},\"id\":\"summary-call\",\"type\":\"function\"}",
+      "action": "workspace_document_summary",
+      "action_input": {
+        "action": "summarize",
+        "document_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "observation": "Partial summary of document bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (covers only the first 2 of 3 sections; reasons: max_chunks):\nCombined first two sections.",
+      "ok": true,
+      "error": null,
+      "tool_result": {
+        "ok": true,
+        "content": "Partial summary of document bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (covers only the first 2 of 3 sections; reasons: max_chunks):\nCombined first two sections.",
+        "artifacts": {
+          "sources": [
+            {
+              "document_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "display_filename": "guide.txt",
+              "chunk_index": 0,
+              "text": "First section source.",
+              "score": null
+            },
+            {
+              "document_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "display_filename": "guide.txt",
+              "chunk_index": 1,
+              "text": "Second section source.",
+              "score": null
+            }
+          ],
+          "outputs": {
+            "action": "summarize",
+            "document_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "display_filename": "guide.txt",
+            "completion_status": "partial",
+            "stop_reasons": ["max_chunks"],
+            "total_chunks": 3,
+            "processed_chunks": 2,
+            "summary_llm_call_count": 3,
+            "chunk_summaries": [
+              {"chunk_index": 0, "summary": "First section points."},
+              {"chunk_index": 1, "summary": "Second section points."}
+            ]
+          }
+        },
+        "error": null,
+        "error_details": {}
+      }
+    }
+  ],
+  "sources": [
+    {
+      "document_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "display_filename": "guide.txt",
+      "chunk_index": 0,
+      "text": "First section source.",
+      "score": null
+    },
+    {
+      "document_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "display_filename": "guide.txt",
+      "chunk_index": 1,
+      "text": "Second section source.",
+      "score": null
+    }
+  ]
+}

@@ -1,7 +1,10 @@
+from app.tools.artifacts import ToolArtifacts, ToolSourceArtifact
 from app.tools.calculator import CalculatorInput, CalculatorTool
 from app.tools.document_tools import (
     WorkspaceDocumentSearchInput,
     WorkspaceDocumentSearchTool,
+    WorkspaceDocumentSummaryInput,
+    WorkspaceDocumentSummaryTool,
 )
 from app.tools.registry import (
     BaseTool,
@@ -15,6 +18,12 @@ from app.tools.registry import (
     build_tool_approval_id,
     create_default_tool_registry,
 )
+from app.tools.interactions import (
+    ClarificationRequest,
+    ClarificationResolution,
+    PendingClarification,
+    ToolInteraction,
+)
 
 __all__ = [
     "BaseTool",
@@ -22,13 +31,21 @@ __all__ = [
     "CalculatorTool",
     "TOOL_BLOCKED_BY_POLICY",
     "TOOL_CONFIRMATION_REQUIRED",
+    "ToolArtifacts",
     "ToolContext",
     "ToolDescription",
+    "ClarificationRequest",
+    "ClarificationResolution",
+    "PendingClarification",
+    "ToolInteraction",
     "ToolRegistry",
     "ToolResult",
     "ToolRiskLevel",
+    "ToolSourceArtifact",
     "WorkspaceDocumentSearchInput",
     "WorkspaceDocumentSearchTool",
+    "WorkspaceDocumentSummaryInput",
+    "WorkspaceDocumentSummaryTool",
     "build_tool_approval_id",
     "create_default_tool_registry",
 ]

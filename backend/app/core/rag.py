@@ -15,8 +15,7 @@ class DocumentChunk(BaseModel):
     id: str
     document_id: str
     workspace_id: str
-    original_filename: str
-    stored_filename: str
+    display_filename: str
     extension: str
     chunk_index: int
     text: str
@@ -53,8 +52,7 @@ class TextChunker:
                 id=f"{document.id}:{index}",
                 document_id=document.id,
                 workspace_id=scope,
-                original_filename=document.original_filename,
-                stored_filename=document.stored_filename,
+                display_filename=document.display_filename,
                 extension=document.extension,
                 chunk_index=index,
                 text=text,

@@ -1,8 +1,6 @@
 import asyncio
 import logging
 from io import BytesIO
-from pathlib import Path
-
 import pytest
 from fastapi import UploadFile
 from sqlalchemy.exc import SQLAlchemyError
@@ -49,8 +47,7 @@ def make_chunk(
         id=f"{'a' * 32}:{chunk_index}",
         document_id="a" * 32,
         workspace_id=workspace_id,
-        original_filename="guide.txt",
-        stored_filename="guide.txt",
+        display_filename="guide.txt",
         extension=".txt",
         chunk_index=chunk_index,
         text=text,
@@ -428,8 +425,7 @@ def test_delete_workspace_removes_documents_conversations_messages_and_files(
             make_upload(),
         )
     )
-    upload_path = Path(document.upload_path)
-    parsed_path = Path(document.parsed_path)
+    paths = documents.build_storage_paths(document.id, document.extension)
     conversation = service.create_conversation(session, workspace.id)
     asyncio.run(
         service.chat_in_conversation(
@@ -469,7 +465,13 @@ def test_delete_workspace_removes_documents_conversations_messages_and_files(
         action_input={"expression": "1 + 1"},
         observation="2",
         ok=True,
-        tool_result={"ok": True, "content": "2", "data": {"result": 2}},
+        tool_result={
+            "ok": True,
+            "content": "2",
+            "artifacts": {"sources": [], "outputs": {"result": 2}},
+            "error": None,
+            "error_details": {},
+        },
     )
     session.add(invocation)
     session.add(step)
@@ -491,10 +493,10 @@ def test_delete_workspace_removes_documents_conversations_messages_and_files(
     assert session.exec(select(ConversationMessage)).all() == []
     assert session.exec(select(AgentInvocation)).all() == []
     assert session.exec(select(AgentStepRecord)).all() == []
-    assert not upload_path.exists()
-    assert not parsed_path.exists()
-    assert not upload_path.parent.exists()
-    assert not parsed_path.parent.exists()
+    assert not paths.upload_file.exists()
+    assert not paths.parsed_file.exists()
+    assert not paths.upload_file.parent.exists()
+    assert not paths.parsed_file.parent.exists()
 
     events = [record.message for record in caplog.records]
     assert "document.upload.completed" in events
@@ -522,21 +524,20 @@ def test_delete_workspace_rejects_unsafe_document_paths_before_side_effects(
     document_id = "e" * 32
     unsafe_upload_path = tmp_path / "outside.txt"
     unsafe_upload_path.write_text("do not delete", encoding="utf-8")
-    parsed_path = documents.parsed_dir / document_id / "guide.txt"
-    parsed_path.parent.mkdir(parents=True)
-    parsed_path.write_text("parsed", encoding="utf-8")
+    paths = documents.build_storage_paths(document_id, ".txt")
+    paths.upload_file.parent.mkdir(parents=True)
+    paths.upload_file.symlink_to(unsafe_upload_path)
+    paths.parsed_file.parent.mkdir(parents=True)
+    paths.parsed_file.write_text("parsed", encoding="utf-8")
     session.add(
         WorkspaceDocument(
             id=document_id,
             workspace_id=workspace.id,
-            original_filename="guide.txt",
-            stored_filename="guide.txt",
+            display_filename="guide.txt",
             content_type="text/plain",
             extension=".txt",
             size_bytes=13,
             character_count=6,
-            upload_path=str(unsafe_upload_path),
-            parsed_path=str(parsed_path),
             chunk_count=1,
         )
     )
@@ -549,7 +550,7 @@ def test_delete_workspace_rejects_unsafe_document_paths_before_side_effects(
     assert session.get(Workspace, workspace.id) is not None
     assert session.get(WorkspaceDocument, document_id) is not None
     assert unsafe_upload_path.read_text(encoding="utf-8") == "do not delete"
-    assert parsed_path.read_text(encoding="utf-8") == "parsed"
+    assert paths.parsed_file.read_text(encoding="utf-8") == "parsed"
     assert "workspace.delete.failed" in caplog.text
     assert str(unsafe_upload_path) not in caplog.text
 
@@ -573,8 +574,7 @@ def test_delete_workspace_keeps_files_and_database_when_index_delete_fails(
             make_upload(),
         )
     )
-    upload_path = Path(document.upload_path)
-    parsed_path = Path(document.parsed_path)
+    paths = documents.build_storage_paths(document.id, document.extension)
     rag.delete_error = RAGIndexError("failed to delete indexed document")
 
     with pytest.raises(RAGIndexError):
@@ -582,8 +582,8 @@ def test_delete_workspace_keeps_files_and_database_when_index_delete_fails(
 
     assert session.get(Workspace, workspace.id) is not None
     assert session.get(WorkspaceDocument, document.id) is not None
-    assert upload_path.read_bytes() == b"hello workspace"
-    assert parsed_path.read_text(encoding="utf-8") == "hello workspace"
+    assert paths.upload_file.read_bytes() == b"hello workspace"
+    assert paths.parsed_file.read_text(encoding="utf-8") == "hello workspace"
 
 
 def test_delete_workspace_keeps_database_when_file_delete_fails(
@@ -606,8 +606,7 @@ def test_delete_workspace_keeps_database_when_file_delete_fails(
             make_upload(),
         )
     )
-    upload_path = Path(document.upload_path)
-    parsed_path = Path(document.parsed_path)
+    paths = documents.build_storage_paths(document.id, document.extension)
 
     async def broken_file_delete(deletion_plan):
         raise ValueError("disk unavailable")
@@ -620,8 +619,8 @@ def test_delete_workspace_keeps_database_when_file_delete_fails(
     assert rag.delete_calls == [(document.id, workspace.id)]
     assert session.get(Workspace, workspace.id) is not None
     assert session.get(WorkspaceDocument, document.id) is not None
-    assert upload_path.exists()
-    assert parsed_path.exists()
+    assert paths.upload_file.exists()
+    assert paths.parsed_file.exists()
 
 
 def test_delete_workspace_database_failure_does_not_restore_files_or_index(
@@ -644,8 +643,7 @@ def test_delete_workspace_database_failure_does_not_restore_files_or_index(
             make_upload(),
         )
     )
-    upload_path = Path(document.upload_path)
-    parsed_path = Path(document.parsed_path)
+    paths = documents.build_storage_paths(document.id, document.extension)
     original_commit = session.commit
 
     def broken_commit():
@@ -658,8 +656,8 @@ def test_delete_workspace_database_failure_does_not_restore_files_or_index(
 
     monkeypatch.setattr(session, "commit", original_commit)
     assert rag.delete_calls == [(document.id, workspace.id)]
-    assert not upload_path.exists()
-    assert not parsed_path.exists()
+    assert not paths.upload_file.exists()
+    assert not paths.parsed_file.exists()
     assert session.get(Workspace, workspace.id) is not None
     assert session.get(WorkspaceDocument, document.id) is not None
 

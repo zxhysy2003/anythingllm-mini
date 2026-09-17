@@ -129,8 +129,7 @@ class DocumentConsistencyService:
         try:
             deletion_plan = await self.documents.build_document_file_deletion_plan(
                 document.id,
-                document.upload_path,
-                document.parsed_path,
+                document.extension,
             )
         except Exception as exc:
             issues.append(

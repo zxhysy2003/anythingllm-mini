@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from app.services.chat_service import ChatResult
 from app.services.document_service import (
     DeletedDocumentFiles,
-    DocumentFileDeletionPlan,
+    DocumentStoragePaths,
     ParsedDocumentFile,
     SavedDocumentFile,
 )
@@ -93,7 +93,7 @@ class FakeRAGService:
     def to_source(self, chunk):
         return RAGSource(
             document_id=chunk.document_id,
-            original_filename=chunk.original_filename,
+            display_filename=chunk.display_filename,
             chunk_index=chunk.chunk_index,
             text=chunk.text,
             score=chunk.score,
@@ -156,46 +156,38 @@ class FakeDocumentService:
     async def save_upload_file(self, file):
         return SavedDocumentFile(
             id="d" * 32,
-            original_filename=file.filename,
-            stored_filename="guide.txt",
+            display_filename=file.filename,
             content_type=file.content_type,
             size_bytes=5,
-            upload_path="/tmp/uploads/guide.txt",
             extension=".txt",
         )
 
     async def parse_saved_file(self, saved_file):
         return ParsedDocumentFile(
             id=saved_file.id,
-            original_filename=saved_file.original_filename,
-            stored_filename=saved_file.stored_filename,
+            display_filename=saved_file.display_filename,
             extension=saved_file.extension,
             text="hello",
             character_count=5,
-            parsed_path="/tmp/parsed/guide.txt",
         )
 
     async def build_document_file_deletion_plan(
         self,
         document_id,
-        upload_path,
-        parsed_path,
+        extension,
     ):
-        return DocumentFileDeletionPlan(
+        return DocumentStoragePaths(
             document_id=document_id,
-            upload_file=Path(upload_path),
-            parsed_file=Path(parsed_path),
-            upload_path=upload_path,
-            parsed_path=parsed_path,
+            extension=extension,
+            upload_file=Path(f"/tmp/uploads/{document_id}/source{extension}"),
+            parsed_file=Path(f"/tmp/parsed/{document_id}/content.txt"),
         )
 
     async def delete_document_files(self, deletion_plan):
         return DeletedDocumentFiles(
-            upload_path=deletion_plan.upload_path,
-            parsed_path=deletion_plan.parsed_path,
             upload_file_deleted=True,
             parsed_file_deleted=True,
         )
 
-    async def validate_document_file_paths(self, document_id, upload_path, parsed_path):
+    async def validate_document_file_paths(self, document_id, extension):
         return None

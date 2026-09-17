@@ -2,7 +2,11 @@ import hashlib
 import json
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
+from sqlmodel import Session
+
+from app.tools.artifacts import ToolArtifacts
+from app.tools.interactions import ToolInteraction
 
 ToolRiskLevel = Literal["low", "medium", "high"]
 TOOL_RISK_LEVELS = {"low", "medium", "high"}
@@ -12,17 +16,31 @@ TOOL_BLOCKED_BY_POLICY = "tool_blocked_by_policy"
 
 
 class ToolContext(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     workspace_id: str | None = None
     conversation_id: str | None = None
     agent_mode: str | None = None
     approved_tool_call_ids: set[str] = Field(default_factory=set)
+    clarification_count: int = Field(default=0, ge=0)
+    remaining_llm_calls: int | None = Field(default=None, ge=0)
+    session: Session | None = Field(default=None, exclude=True, repr=False)
+    progress_reporter: Any | None = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+    )
 
 
 class ToolResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     ok: bool
     content: str
-    data: dict[str, Any] = Field(default_factory=dict)
+    artifacts: ToolArtifacts = Field(default_factory=ToolArtifacts)
+    interaction: ToolInteraction | None = None
     error: str | None = None
+    error_details: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class ToolDescription(BaseModel):
@@ -116,8 +134,8 @@ class ToolRegistry:
             return ToolResult(
                 ok=False,
                 content="Tool input validation failed.",
-                data={"details": exc.errors()},
                 error="invalid_tool_input",
+                error_details={"details": json.loads(exc.json())},
             )
 
         policy_result = self._evaluate_policy(
@@ -180,11 +198,17 @@ class ToolRegistry:
 
 def create_default_tool_registry() -> ToolRegistry:
     from app.tools.calculator import CalculatorTool
-    from app.tools.document_tools import WorkspaceDocumentSearchTool
+    from app.tools.clarifying_question import ClarifyingQuestionTool
+    from app.tools.document_tools import (
+        WorkspaceDocumentSearchTool,
+        WorkspaceDocumentSummaryTool,
+    )
 
     registry = ToolRegistry()
     registry.register(CalculatorTool())
+    registry.register(ClarifyingQuestionTool())
     registry.register(WorkspaceDocumentSearchTool())
+    registry.register(WorkspaceDocumentSummaryTool())
     return registry
 
 
@@ -221,7 +245,7 @@ def _policy_failure_result(
     reason: str,
     approval_id: str | None = None,
 ) -> ToolResult:
-    data: dict[str, Any] = {
+    error_details: dict[str, JsonValue] = {
         "reason": reason,
         "tool_name": name,
         "risk_level": _tool_risk_level(tool),
@@ -229,12 +253,12 @@ def _policy_failure_result(
         "requires_confirmation": bool(getattr(tool, "requires_confirmation", False)),
     }
     if approval_id is not None:
-        data["approval_id"] = approval_id
+        error_details["approval_id"] = approval_id
     return ToolResult(
         ok=False,
         content=f"Tool blocked by policy: {reason}.",
-        data=data,
         error=error,
+        error_details=error_details,
     )
 
 

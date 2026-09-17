@@ -2,12 +2,14 @@ import json
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import BaseModel, Field
 
 from app.api import agents as agents_api
 from app.api import workspaces as workspaces_api
 from app.core.agent_modes import AGENT_MODE_REACT_TEXT
 from app.core.llm import DeepSeekToolCall, DeepSeekToolCallResult
 from app.core.native_tool_calling import DeepSeekNativeToolCallingExecutor
+from app.core.tool_progress import ToolProgress
 from app.db.session import get_session
 from app.main import app
 from app.services.agent_service import AgentService
@@ -16,11 +18,13 @@ from app.services.document_service import DocumentService
 from app.services.workspace_document_service import WorkspaceDocumentService
 from app.services.workspace_service import WorkspaceService
 from app.tools.calculator import CalculatorTool
+from app.tools.clarifying_question import ClarifyingQuestionTool
 from app.tools.document_tools import WorkspaceDocumentSearchTool
 from app.tools.registry import (
     TOOL_CONFIRMATION_REQUIRED,
     ToolContext,
     ToolRegistry,
+    ToolResult,
     build_tool_approval_id,
 )
 from tests.fakes import ConfirmationRequiredTool, FakeChatService, FakeRAGService
@@ -64,6 +68,31 @@ class ScriptedToolCallingClient:
             }
         )
         return self.responses[len(self.calls) - 1]
+
+
+class ProgressInput(BaseModel):
+    value: str = Field(min_length=1)
+
+
+class ProgressTool:
+    name = "progress_tool"
+    description = "Emit safe progress for the SSE API test."
+    input_model = ProgressInput
+    risk_level = "low"
+    side_effects = False
+    requires_confirmation = False
+    allowed_in_agent_modes = None
+
+    async def run(self, input_data, context):
+        await context.progress_reporter.report(
+            ToolProgress(
+                phase="summarizing",
+                completed_units=1,
+                total_units=2,
+                message="Summarized section 1 of 2.",
+            )
+        )
+        return ToolResult(ok=True, content=f"processed {input_data.value}")
 
 
 def native_tool_result(content, *, tool_calls=None, finish_reason="stop"):
@@ -181,6 +210,11 @@ def test_agent_endpoint_runs_agent_loop(agent_api):
     assert payload["model"] == "fake-agent-model"
     assert payload["steps"][0]["action"] == "calculator"
     assert payload["steps"][0]["observation"] == "7"
+    assert payload["steps"][0]["tool_result"]["artifacts"] == {
+        "sources": [],
+        "outputs": {"result": 7},
+    }
+    assert "data" not in payload["steps"][0]["tool_result"]
     assert payload["metrics"]["max_steps"] == 5
     assert payload["metrics"]["llm_call_count"] == 2
     assert payload["metrics"]["step_count"] == 1
@@ -213,6 +247,7 @@ def test_agent_endpoint_runs_agent_loop(agent_api):
     invocation = invocation_response.json()
     assert invocation["id"] == payload["agent_invocation_id"]
     assert invocation["assistant_message_id"] == messages[1]["id"]
+    assert invocation["answer"] == "the result is 7"
     assert invocation["agent_mode"] == "react_text"
     assert invocation["status"] == "completed"
     assert invocation["steps"] == payload["steps"]
@@ -251,6 +286,164 @@ def test_agent_stream_endpoint_streams_agent_events(agent_api):
     assert payload["agent_invocation_id"]
     assert payload["steps"][0]["action"] == "calculator"
     assert payload["metrics"]["tool_call_count"] == 1
+
+
+def test_agent_stream_endpoint_serializes_tool_progress(agent_api):
+    registry = ToolRegistry()
+    registry.register(ProgressTool())
+    client, _ = agent_api(
+        [
+            'Action: progress_tool\nAction Input: {"value": "document"}',
+            "Final Answer: completed",
+        ],
+        registry=registry,
+    )
+    workspace = create_workspace(client)
+    conversation = create_conversation(client, workspace["id"])
+
+    with client.stream(
+        "POST",
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}"
+        "/agent/stream",
+        json={"message": "summarize", "max_steps": 3},
+    ) as response:
+        events = parse_sse_events("".join(response.iter_text()))
+
+    event_names = [event["event"] for event in events]
+    assert event_names.index("tool_started") < event_names.index("tool_progress")
+    assert event_names.index("tool_progress") < event_names.index("tool_finished")
+    progress = next(
+        event["data"]["payload"]
+        for event in events
+        if event["event"] == "tool_progress"
+    )
+    assert progress == {
+        "phase": "summarizing",
+        "completed_units": 1,
+        "total_units": 2,
+        "message": "Summarized section 1 of 2.",
+        "step_index": 1,
+        "tool_call_id": None,
+        "tool_name": "progress_tool",
+    }
+
+
+def test_agent_api_pauses_and_continues_clarification(agent_api):
+    registry = ToolRegistry()
+    registry.register(ClarifyingQuestionTool())
+    client, _ = agent_api(
+        [
+            (
+                "Action: request_user_input\nAction Input: "
+                '{"question": "Which report?", "input_type": "choice", '
+                '"choices": ["annual", "market"]}'
+            ),
+            "Final Answer: continuing with annual.",
+        ],
+        registry=registry,
+    )
+    workspace = create_workspace(client)
+    conversation = create_conversation(client, workspace["id"])
+
+    paused_response = client.post(
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}/agent",
+        json={"message": "summarize a report", "max_steps": 3},
+    )
+
+    assert paused_response.status_code == 200
+    paused = paused_response.json()
+    assert paused["status"] == "needs_input"
+    assert paused["answer"] is None
+    assert paused["pending_input"]["choices"] == ["annual", "market"]
+    assert paused["steps"][0]["tool_result"]["interaction"]["resolution"] is None
+    messages = client.get(
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}/messages"
+    ).json()
+    assert [message["role"] for message in messages] == ["user"]
+    assert (
+        messages[0]["metrics"]["agent_invocation_id"] == paused["agent_invocation_id"]
+    )
+
+    invocation_response = client.get(
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}"
+        f"/agent-invocations/{paused['agent_invocation_id']}"
+    )
+    invocation = invocation_response.json()
+    assert invocation["assistant_message_id"] is None
+    assert invocation["answer"] is None
+    assert invocation["ended_at"] is None
+    assert invocation["pending_input"]["question"] == "Which report?"
+
+    completed_response = client.post(
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}"
+        f"/agent-invocations/{paused['agent_invocation_id']}/continue",
+        json={"answer": "annual"},
+    )
+
+    assert completed_response.status_code == 200
+    completed = completed_response.json()
+    assert completed["status"] == "completed"
+    assert completed["answer"] == "continuing with annual."
+    assert completed["agent_invocation_id"] == paused["agent_invocation_id"]
+    assert completed["pending_input"] is None
+    assert (
+        completed["steps"][0]["tool_result"]["interaction"]["resolution"]["kind"]
+        == "answered"
+    )
+    completed_invocation = client.get(
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}"
+        f"/agent-invocations/{paused['agent_invocation_id']}"
+    ).json()
+    assert completed_invocation["answer"] == "continuing with annual."
+    assert (
+        client.post(
+            f"/workspaces/{workspace['id']}/conversations/{conversation['id']}"
+            f"/agent-invocations/{paused['agent_invocation_id']}/continue",
+            json={"answer": "annual"},
+        ).status_code
+        == 409
+    )
+
+
+def test_agent_stream_pauses_then_continues_clarification(agent_api):
+    registry = ToolRegistry()
+    registry.register(ClarifyingQuestionTool())
+    client, _ = agent_api(
+        [
+            (
+                "Action: request_user_input\nAction Input: "
+                '{"question": "Need detail", "input_type": "text"}'
+            ),
+            "Final Answer: detail received.",
+        ],
+        registry=registry,
+    )
+    workspace = create_workspace(client)
+    conversation = create_conversation(client, workspace["id"])
+    stream_path = (
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}/agent/stream"
+    )
+
+    with client.stream(
+        "POST", stream_path, json={"message": "ask", "max_steps": 3}
+    ) as response:
+        body = "".join(response.iter_text())
+
+    events = parse_sse_events(body)
+    assert events[-1]["event"] == "agent_needs_input"
+    paused = events[-1]["data"]["payload"]
+    assert paused["status"] == "needs_input"
+
+    continue_path = (
+        f"/workspaces/{workspace['id']}/conversations/{conversation['id']}"
+        f"/agent-invocations/{paused['agent_invocation_id']}/continue/stream"
+    )
+    with client.stream("POST", continue_path, json={"answer": "detail"}) as response:
+        body = "".join(response.iter_text())
+
+    events = parse_sse_events(body)
+    assert events[-1]["event"] == "agent_finished"
+    assert events[-1]["data"]["payload"]["answer"] == "detail received."
 
 
 def test_agent_endpoint_accepts_approved_tool_call_ids(agent_api):
@@ -323,7 +516,10 @@ def test_agent_stream_endpoint_streams_policy_blocked_step(agent_api):
     step = tool_finished["payload"]["step"]
     assert step["ok"] is False
     assert step["error"] == TOOL_CONFIRMATION_REQUIRED
-    assert step["tool_result"]["data"]["approval_id"].startswith("tool_approval_")
+    assert step["tool_result"]["error_details"]["approval_id"].startswith(
+        "tool_approval_"
+    )
+    assert "data" not in step["tool_result"]
     assert tool.executed is False
 
     finished = events[-1]["data"]
@@ -376,7 +572,12 @@ def test_agent_endpoint_runs_native_tool_calling_mode(agent_api):
     assert payload["provider"] == "fake"
     assert payload["model"] == "fake-native-model"
     assert payload["steps"][0]["action"] == "calculator"
-    assert payload["steps"][0]["tool_result"]["data"] == {"result": 7}
+    assert payload["steps"][0]["tool_result"]["artifacts"] == {
+        "sources": [],
+        "outputs": {"result": 7},
+    }
+    assert payload["steps"][0]["tool_result"]["error_details"] == {}
+    assert "data" not in payload["steps"][0]["tool_result"]
     assert payload["metrics"]["llm_call_count"] == 2
     assert payload["metrics"]["tool_call_count"] == 1
 
@@ -566,6 +767,12 @@ def test_agent_openapi_route_documents_agent_endpoint():
     assert "separate agent invocation record" in operation["description"]
     request_schema = schema["components"]["schemas"]["WorkspaceAgentRequest"]
     assert "approved_tool_call_ids" in request_schema["properties"]
+    tool_result_schema = schema["components"]["schemas"]["AgentToolResultRead"]
+    assert "artifacts" in tool_result_schema["properties"]
+    assert "error_details" in tool_result_schema["properties"]
+    assert "data" not in tool_result_schema["properties"]
+    artifact_schema = schema["components"]["schemas"]["AgentToolArtifactsRead"]
+    assert set(artifact_schema["properties"]) == {"sources", "outputs"}
 
     stream_operation = schema["paths"][
         "/workspaces/{workspace_id}/conversations/{conversation_id}/agent/stream"

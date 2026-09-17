@@ -32,8 +32,10 @@ def test_calculator_evaluates_supported_arithmetic(expression, expected):
 
     assert result.ok is True
     assert result.content == str(expected)
-    assert result.data == {"result": expected}
+    assert result.artifacts.outputs == {"result": expected}
+    assert result.artifacts.sources == []
     assert result.error is None
+    assert result.error_details == {}
 
 
 @pytest.mark.parametrize(

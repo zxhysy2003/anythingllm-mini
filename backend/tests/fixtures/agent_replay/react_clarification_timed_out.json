@@ -1,0 +1,53 @@
+{
+  "schema_version": 2,
+  "invocation": {
+    "agent_mode": "react_text",
+    "status": "completed",
+    "provider": "fake",
+    "model": "fake-agent-model",
+    "input_message": "Draft an announcement.",
+    "answer": "I will use a neutral default tone."
+  },
+  "metrics": {
+    "max_steps": 3,
+    "llm_call_count": 2,
+    "step_count": 1,
+    "tool_call_count": 1,
+    "failed_step_count": 0,
+    "source_count": 0,
+    "max_steps_reached": false,
+    "total_latency_ms": 12
+  },
+  "steps": [
+    {
+      "step_index": 1,
+      "llm_output": "Action: request_user_input\nAction Input: {\"question\": \"Which tone should I use?\", \"input_type\": \"text\", \"choices\": []}",
+      "action": "request_user_input",
+      "action_input": {
+        "question": "Which tone should I use?",
+        "input_type": "text",
+        "choices": []
+      },
+      "observation": "Clarification request timed out without a user response.",
+      "ok": true,
+      "error": null,
+      "tool_result": {
+        "ok": true,
+        "content": "Clarification request timed out without a user response.",
+        "artifacts": {"sources": [], "outputs": {}},
+        "interaction": {
+          "kind": "clarification",
+          "request": {
+            "question": "Which tone should I use?",
+            "input_type": "text",
+            "choices": []
+          },
+          "resolution": {"kind": "timed_out", "answer": null}
+        },
+        "error": null,
+        "error_details": {}
+      }
+    }
+  ],
+  "sources": []
+}

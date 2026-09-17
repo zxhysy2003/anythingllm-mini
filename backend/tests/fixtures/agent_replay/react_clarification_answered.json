@@ -1,0 +1,53 @@
+{
+  "schema_version": 2,
+  "invocation": {
+    "agent_mode": "react_text",
+    "status": "completed",
+    "provider": "fake",
+    "model": "fake-agent-model",
+    "input_message": "Prepare the report.",
+    "answer": "I will prepare the annual report."
+  },
+  "metrics": {
+    "max_steps": 3,
+    "llm_call_count": 2,
+    "step_count": 1,
+    "tool_call_count": 1,
+    "failed_step_count": 0,
+    "source_count": 0,
+    "max_steps_reached": false,
+    "total_latency_ms": 14
+  },
+  "steps": [
+    {
+      "step_index": 1,
+      "llm_output": "Action: request_user_input\nAction Input: {\"question\": \"Which report should I prepare?\", \"input_type\": \"choice\", \"choices\": [\"annual\", \"market\"]}",
+      "action": "request_user_input",
+      "action_input": {
+        "question": "Which report should I prepare?",
+        "input_type": "choice",
+        "choices": ["annual", "market"]
+      },
+      "observation": "User answered clarification: annual",
+      "ok": true,
+      "error": null,
+      "tool_result": {
+        "ok": true,
+        "content": "User answered clarification: annual",
+        "artifacts": {"sources": [], "outputs": {}},
+        "interaction": {
+          "kind": "clarification",
+          "request": {
+            "question": "Which report should I prepare?",
+            "input_type": "choice",
+            "choices": ["annual", "market"]
+          },
+          "resolution": {"kind": "answered", "answer": "annual"}
+        },
+        "error": null,
+        "error_details": {}
+      }
+    }
+  ],
+  "sources": []
+}

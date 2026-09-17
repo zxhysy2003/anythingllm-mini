@@ -14,6 +14,10 @@ class AgentInvocationNotFoundError(LookupError):
     """Raised when an agent invocation does not belong to the conversation."""
 
 
+class AgentInvocationConflictError(RuntimeError):
+    """Raised when an Agent invocation cannot enter the requested lifecycle state."""
+
+
 class WorkspaceNotFoundError(LookupError):
     """Raised when a workspace id does not exist."""
 

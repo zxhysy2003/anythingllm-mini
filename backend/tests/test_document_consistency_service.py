@@ -42,12 +42,10 @@ def create_workspace(session, workspace_id: str = "1" * 32) -> Workspace:
 def create_document_files(
     documents: DocumentService,
     document_id: str,
-    stored_filename: str = "guide.txt",
 ) -> tuple[Path, Path]:
-    upload_path = documents.upload_dir / document_id / stored_filename
-    parsed_path = (
-        documents.parsed_dir / document_id / f"{Path(stored_filename).stem}.txt"
-    )
+    paths = documents.build_storage_paths(document_id, ".txt")
+    upload_path = paths.upload_file
+    parsed_path = paths.parsed_file
     upload_path.parent.mkdir(parents=True, exist_ok=True)
     parsed_path.parent.mkdir(parents=True, exist_ok=True)
     upload_path.write_text("uploaded", encoding="utf-8")
@@ -62,23 +60,17 @@ def add_workspace_document(
     document_id: str,
     *,
     chunk_count: int = 2,
-    upload_path: Path | None = None,
-    parsed_path: Path | None = None,
 ) -> WorkspaceDocument:
-    if upload_path is None or parsed_path is None:
-        upload_path, parsed_path = create_document_files(documents, document_id)
+    create_document_files(documents, document_id)
 
     document = WorkspaceDocument(
         id=document_id,
         workspace_id=workspace_id,
-        original_filename="guide.txt",
-        stored_filename=upload_path.name,
+        display_filename="guide.txt",
         content_type="text/plain",
         extension=".txt",
         size_bytes=8,
         character_count=6,
-        upload_path=str(upload_path),
-        parsed_path=str(parsed_path),
         chunk_count=chunk_count,
     )
     session.add(document)
@@ -144,8 +136,8 @@ def test_document_consistency_reports_missing_upload_and_parsed_files(
     missing_parsed_id = "c" * 32
     first = add_workspace_document(session, workspace.id, documents, missing_upload_id)
     second = add_workspace_document(session, workspace.id, documents, missing_parsed_id)
-    Path(first.upload_path).unlink()
-    Path(second.parsed_path).unlink()
+    documents.build_storage_paths(first.id, first.extension).upload_file.unlink()
+    documents.build_storage_paths(second.id, second.extension).parsed_file.unlink()
     store = FakeVectorStore(
         [
             vector_key(workspace.id, missing_upload_id),
@@ -274,19 +266,12 @@ def test_document_consistency_never_repairs_unsafe_paths(
         parsed_dir=tmp_path / "parsed",
     )
     document_id = "f" * 32
-    unsafe_upload_path = tmp_path / "outside.txt"
-    unsafe_upload_path.write_text("outside", encoding="utf-8")
-    parsed_path = documents.parsed_dir / document_id / "guide.txt"
-    parsed_path.parent.mkdir(parents=True)
-    parsed_path.write_text("parsed", encoding="utf-8")
-    add_workspace_document(
-        session,
-        workspace.id,
-        documents,
-        document_id,
-        upload_path=unsafe_upload_path,
-        parsed_path=parsed_path,
-    )
+    document = add_workspace_document(session, workspace.id, documents, document_id)
+    paths = documents.build_storage_paths(document.id, document.extension)
+    paths.upload_file.unlink()
+    outside_path = tmp_path / "outside.txt"
+    outside_path.write_text("outside", encoding="utf-8")
+    paths.upload_file.symlink_to(outside_path)
     store = FakeVectorStore([vector_key(workspace.id, document_id)])
     service = DocumentConsistencyService(documents=documents, store=store)
 
@@ -294,5 +279,5 @@ def test_document_consistency_never_repairs_unsafe_paths(
 
     assert issue_kinds(report) == ["unsafe_document_path"]
     assert report.repaired_actions == []
-    assert unsafe_upload_path.read_text(encoding="utf-8") == "outside"
+    assert outside_path.read_text(encoding="utf-8") == "outside"
     assert store.deleted_documents == []

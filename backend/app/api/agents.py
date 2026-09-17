@@ -8,6 +8,7 @@ from sqlmodel import Session
 
 from app.api.errors import to_http_exception
 from app.api.schemas.agents import (
+    AgentContinuationRequest,
     AgentInvocationRead,
     WorkspaceAgentRequest,
     WorkspaceAgentResponse,
@@ -16,6 +17,7 @@ from app.core.agent_events import AgentEvent, AgentEventType
 from app.db.session import get_session
 from app.services.agent_service import agent_service
 from app.services.exceptions import (
+    AgentInvocationConflictError,
     AgentInvocationNotFoundError,
     ChatServiceError,
     ConversationNotFoundError,
@@ -59,9 +61,10 @@ class QueueAgentEventEmitter:
         "Run a minimal workspace agent executor inside one conversation. "
         "The default mode is ReAct text, and requests may opt into DeepSeek "
         "native tool calling. The agent can call registered tools such as "
-        "calculator and workspace_document_search, saves the final "
-        "user/assistant messages, and stores intermediate agent steps on a "
-        "separate agent invocation record."
+        "calculator, workspace_document_search, workspace_document_summary, and "
+        "request_user_input. A "
+        "clarification returns needs_input instead of holding the HTTP request "
+        "open; callers then continue the same separate agent invocation record."
     ),
 )
 async def run_agent_in_conversation(
@@ -86,6 +89,7 @@ async def run_agent_in_conversation(
         WorkspaceNotFoundError,
         ConversationNotFoundError,
         ChatServiceError,
+        AgentInvocationConflictError,
         RAGQueryError,
         WorkspacePersistenceError,
     ) as exc:
@@ -99,8 +103,8 @@ async def run_agent_in_conversation(
     description=(
         "Run the workspace agent and stream SSE-format execution events. "
         "This streams agent/tool status events, not token-by-token answer text. "
-        "The final agent_finished event contains the same completed run payload "
-        "as the non-streaming agent endpoint."
+        "agent_needs_input is a normal terminal event for a paused invocation; "
+        "agent_finished contains a completed lifecycle payload."
     ),
 )
 async def stream_agent_in_conversation(
@@ -158,6 +162,103 @@ async def stream_agent_in_conversation(
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+@router.post(
+    "/{workspace_id}/conversations/{conversation_id}/agent-invocations/{invocation_id}/continue",
+    response_model=WorkspaceAgentResponse,
+    summary="Continue workspace Agent invocation",
+    description=(
+        "Submit one answer or skip a pending clarification. The same persisted "
+        "Agent invocation resumes with its remaining step budget."
+    ),
+)
+async def continue_agent_in_conversation(
+    workspace_id: str,
+    conversation_id: str,
+    invocation_id: str,
+    request: AgentContinuationRequest,
+    session: SessionDependency,
+) -> WorkspaceAgentResponse:
+    try:
+        result = await agent_service.continue_in_conversation(
+            session,
+            workspace_id,
+            conversation_id,
+            invocation_id,
+            answer=request.answer,
+            skip=request.skip,
+        )
+        return WorkspaceAgentResponse.model_validate(result)
+    except (
+        ValueError,
+        WorkspaceNotFoundError,
+        ConversationNotFoundError,
+        AgentInvocationNotFoundError,
+        AgentInvocationConflictError,
+        ChatServiceError,
+        RAGQueryError,
+        WorkspacePersistenceError,
+    ) as exc:
+        raise to_http_exception(exc) from exc
+
+
+@router.post(
+    "/{workspace_id}/conversations/{conversation_id}/agent-invocations/{invocation_id}/continue/stream",
+    response_class=StreamingResponse,
+    summary="Stream continued workspace Agent invocation",
+    description=(
+        "Submit a pending clarification and stream the continued Agent timeline. "
+        "This endpoint has the same terminal event contract as the initial stream."
+    ),
+)
+async def stream_continued_agent_in_conversation(
+    workspace_id: str,
+    conversation_id: str,
+    invocation_id: str,
+    request: AgentContinuationRequest,
+    session: SessionDependency,
+) -> StreamingResponse:
+    queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue()
+    emitter = QueueAgentEventEmitter(queue)
+
+    async def produce_events() -> None:
+        try:
+            await agent_service.continue_in_conversation(
+                session,
+                workspace_id,
+                conversation_id,
+                invocation_id,
+                answer=request.answer,
+                skip=request.skip,
+                event_emitter=emitter,
+            )
+        except Exception as exc:
+            if not emitter.has_failed:
+                await emitter.emit(
+                    "agent_failed",
+                    {"error": str(exc), "error_type": type(exc).__name__},
+                )
+        finally:
+            await queue.put(None)
+
+    async def event_stream():
+        producer = asyncio.create_task(produce_events())
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                data = json.dumps(event.model_dump(mode="json"), ensure_ascii=False)
+                yield f"event: {event.type}\ndata: {data}\n\n"
+        finally:
+            await producer
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

@@ -1,11 +1,20 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
 
 from app.core.agent_executor import DEFAULT_AGENT_STEPS, MAX_AGENT_STEPS
 from app.core.agent_modes import AGENT_MODE_REACT_TEXT
 from app.services.rag_service import RAGSource
+from app.tools.artifacts import ToolSourceArtifact
+from app.tools.interactions import PendingClarification, ToolInteraction
 
 AgentModeRequest = Literal["react_text", "native_tool_calling"]
 
@@ -25,13 +34,22 @@ class WorkspaceAgentRequest(BaseModel):
         return message
 
 
+class AgentToolArtifactsRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    sources: list[ToolSourceArtifact]
+    outputs: dict[str, JsonValue]
+
+
 class AgentToolResultRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     ok: bool
     content: str
-    data: dict[str, Any]
+    artifacts: AgentToolArtifactsRead
+    interaction: ToolInteraction | None
     error: str | None
+    error_details: dict[str, JsonValue]
 
 
 class AgentStepRead(BaseModel):
@@ -66,7 +84,9 @@ class WorkspaceAgentResponse(BaseModel):
     conversation_id: str
     agent_invocation_id: str
     message: str
-    answer: str
+    status: str
+    answer: str | None
+    pending_input: PendingClarification | None = None
     steps: list[AgentStepRead]
     sources: list[RAGSource]
     provider: str | None
@@ -81,7 +101,8 @@ class AgentInvocationRead(BaseModel):
     workspace_id: str
     conversation_id: str
     user_message_id: str
-    assistant_message_id: str
+    assistant_message_id: str | None
+    answer: str | None
     input_message: str
     agent_mode: str
     status: str
@@ -96,6 +117,30 @@ class AgentInvocationRead(BaseModel):
     max_steps_reached: bool
     total_latency_ms: int
     started_at: datetime
-    ended_at: datetime
+    ended_at: datetime | None
     created_at: datetime
+    pending_input: PendingClarification | None = None
     steps: list[AgentStepRead]
+
+
+class AgentContinuationRequest(BaseModel):
+    answer: str | None = Field(default=None, max_length=2_000)
+    skip: bool = False
+
+    @field_validator("answer")
+    @classmethod
+    def strip_answer(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        answer = value.strip()
+        if not answer:
+            raise ValueError("answer cannot be empty")
+        return answer
+
+    @model_validator(mode="after")
+    def validate_continuation(self) -> "AgentContinuationRequest":
+        if self.skip and self.answer is not None:
+            raise ValueError("answer and skip cannot be sent together")
+        if not self.skip and self.answer is None:
+            raise ValueError("answer is required unless skip is true")
+        return self

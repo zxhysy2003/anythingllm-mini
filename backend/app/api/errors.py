@@ -1,6 +1,7 @@
 from fastapi import HTTPException, status
 
 from app.services.exceptions import (
+    AgentInvocationConflictError,
     AgentInvocationNotFoundError,
     ChatServiceError,
     ConversationNotFoundError,
@@ -13,6 +14,8 @@ from app.services.exceptions import (
 
 
 def to_http_exception(exc: Exception) -> HTTPException:
+    if isinstance(exc, AgentInvocationConflictError):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     if isinstance(
         exc,
         (

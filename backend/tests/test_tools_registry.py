@@ -113,7 +113,7 @@ def test_registry_run_validates_tool_input():
 
     assert result.ok is False
     assert result.error == "invalid_tool_input"
-    assert result.data["details"][0]["loc"] == ("value",)
+    assert result.error_details["details"][0]["loc"] == ["value"]
 
 
 def test_registry_run_wraps_tool_exceptions():
@@ -148,6 +148,10 @@ def test_registry_returns_default_tool_policy_metadata():
     assert descriptions["workspace_document_search"].side_effects is False
     assert descriptions["workspace_document_search"].requires_confirmation is False
     assert descriptions["workspace_document_search"].allowed_in_agent_modes is None
+    assert descriptions["request_user_input"].risk_level == "low"
+    assert descriptions["request_user_input"].side_effects is False
+    assert descriptions["request_user_input"].requires_confirmation is False
+    assert descriptions["request_user_input"].allowed_in_agent_modes is None
 
 
 def test_registry_blocks_confirmation_required_tool_without_approval():
@@ -164,12 +168,12 @@ def test_registry_blocks_confirmation_required_tool_without_approval():
 
     assert result.ok is False
     assert result.error == TOOL_CONFIRMATION_REQUIRED
-    assert result.data["reason"] == "confirmation_required"
-    assert result.data["tool_name"] == tool.name
-    assert result.data["risk_level"] == "high"
-    assert result.data["side_effects"] is True
-    assert result.data["requires_confirmation"] is True
-    assert result.data["approval_id"] == build_tool_approval_id(
+    assert result.error_details["reason"] == "confirmation_required"
+    assert result.error_details["tool_name"] == tool.name
+    assert result.error_details["risk_level"] == "high"
+    assert result.error_details["side_effects"] is True
+    assert result.error_details["requires_confirmation"] is True
+    assert result.error_details["approval_id"] == build_tool_approval_id(
         tool_name=tool.name,
         action_input={"value": "hello"},
         context=context,
@@ -214,7 +218,7 @@ def test_registry_blocks_tool_when_agent_mode_is_not_allowed():
 
     assert result.ok is False
     assert result.error == TOOL_BLOCKED_BY_POLICY
-    assert result.data["reason"] == "agent_mode_not_allowed"
+    assert result.error_details["reason"] == "agent_mode_not_allowed"
 
 
 def test_registry_validates_tool_input_before_policy_check():
@@ -232,7 +236,7 @@ def test_registry_validates_tool_input_before_policy_check():
 
     assert result.ok is False
     assert result.error == "invalid_tool_input"
-    assert "approval_id" not in result.data
+    assert "approval_id" not in result.error_details
     assert tool.executed is False
 
 
@@ -241,5 +245,34 @@ def test_default_tool_registry_includes_v4_tools():
 
     assert {description.name for description in registry.list_tools()} == {
         "calculator",
+        "request_user_input",
         "workspace_document_search",
+        "workspace_document_summary",
     }
+
+
+def test_document_summary_openai_schema_encodes_action_selector_contract():
+    registry = create_default_tool_registry()
+
+    summary_tool = next(
+        tool
+        for tool in registry.list_openai_tools()
+        if tool["function"]["name"] == "workspace_document_summary"
+    )
+    schema = summary_tool["function"]["parameters"]
+
+    assert schema["required"] == ["action"]
+    assert [variant["required"] for variant in schema["oneOf"]] == [
+        ["action"],
+        ["action", "document_id"],
+    ]
+    assert [
+        variant["properties"]["action"]["const"] for variant in schema["oneOf"]
+    ] == [
+        "list",
+        "summarize",
+    ]
+    assert schema["oneOf"][1]["properties"]["document_id"]["type"] == "string"
+    assert "filename" not in schema["properties"]
+    assert schema["additionalProperties"] is False
+    assert "exact document_id" in summary_tool["function"]["description"]
